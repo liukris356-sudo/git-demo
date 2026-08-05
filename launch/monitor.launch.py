@@ -1,5 +1,7 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -15,6 +17,42 @@ def generate_launch_description():
     plot_rate_hz = LaunchConfiguration("plot_rate_hz")
     output_dir = LaunchConfiguration("output_dir")
 
+    sensor_node = Node(
+        package="force_sensor_yl",
+        executable="force_sensor_yl_node",
+        name="force_sensor_yl_node",
+        output="screen",
+        parameters=[
+            {
+                "port": port,
+                "baud_rate": ParameterValue(baud_rate, value_type=int),
+                "topic_name": topic_name,
+                "frame_id": frame_id,
+            }
+        ],
+    )
+    monitor_node = Node(
+        package="force_sensor_yl",
+        executable="force_sensor_yl_monitor",
+        name="force_sensor_yl_monitor",
+        output="screen",
+        parameters=[
+            {
+                "topic_name": topic_name,
+                "window_seconds": ParameterValue(
+                    window_seconds, value_type=float
+                ),
+                "print_rate_hz": ParameterValue(
+                    print_rate_hz, value_type=float
+                ),
+                "plot_rate_hz": ParameterValue(
+                    plot_rate_hz, value_type=float
+                ),
+                "output_dir": output_dir,
+            }
+        ],
+    )
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("port", default_value="/dev/ttyUSB0"),
@@ -29,41 +67,17 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "output_dir", default_value="~/force_sensor_logs"
             ),
-            Node(
-                package="force_sensor_yl",
-                executable="force_sensor_yl_node",
-                name="force_sensor_yl_node",
-                output="screen",
-                parameters=[
-                    {
-                        "port": port,
-                        "baud_rate": ParameterValue(baud_rate, value_type=int),
-                        "topic_name": topic_name,
-                        "frame_id": frame_id,
-                    }
-                ],
-            ),
-            Node(
-                package="force_sensor_yl",
-                executable="force_sensor_yl_monitor",
-                name="force_sensor_yl_monitor",
-                output="screen",
-                parameters=[
-                    {
-                        "topic_name": topic_name,
-                        "window_seconds": ParameterValue(
-                            window_seconds, value_type=float
-                        ),
-                        "print_rate_hz": ParameterValue(
-                            print_rate_hz, value_type=float
-                        ),
-                        "plot_rate_hz": ParameterValue(
-                            plot_rate_hz, value_type=float
-                        ),
-                        "output_dir": output_dir,
-                        "save_enabled": True,
-                    }
-                ],
+            sensor_node,
+            monitor_node,
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=sensor_node,
+                    on_exit=[
+                        EmitEvent(
+                            event=Shutdown(reason="force sensor driver stopped")
+                        )
+                    ],
+                )
             ),
         ]
     )

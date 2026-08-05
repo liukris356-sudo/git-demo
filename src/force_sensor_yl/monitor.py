@@ -2,6 +2,7 @@ import bisect
 import csv
 import threading
 import time
+from array import array
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,6 @@ class ForceSensorMonitor(Node):
         self.declare_parameter("print_rate_hz", 5.0)
         self.declare_parameter("plot_rate_hz", 20.0)
         self.declare_parameter("output_dir", "~/force_sensor_logs")
-        self.declare_parameter("save_enabled", True)
 
         self.topic_name = str(self.get_parameter("topic_name").value)
         self.window_seconds = max(
@@ -48,7 +48,9 @@ class ForceSensorMonitor(Node):
         self.plot_rate_hz = max(
             1.0, float(self.get_parameter("plot_rate_hz").value)
         )
-        self.save_enabled = bool(self.get_parameter("save_enabled").value)
+        self.output_dir = Path(
+            str(self.get_parameter("output_dir").value)
+        ).expanduser()
 
         # Keep enough history for sensors running at up to 1 kHz.
         max_samples = max(2000, int(self.window_seconds * 1000.0) + 1000)
@@ -56,26 +58,12 @@ class ForceSensorMonitor(Node):
         self._channels = [deque(maxlen=max_samples) for _ in CHANNEL_NAMES]
         self._lock = threading.Lock()
         self._first_receive_monotonic = None
+        self._last_receive_monotonic = None
         self._last_print_monotonic = 0.0
-        self._last_flush_monotonic = 0.0
         self.sample_count = 0
-
-        self.log_path = None
-        self._log_file = None
-        self._csv_writer = None
-        if self.save_enabled:
-            output_dir = Path(
-                str(self.get_parameter("output_dir").value)
-            ).expanduser()
-            output_dir.mkdir(parents=True, exist_ok=True)
-            filename = datetime.now().strftime("m3815_%Y%m%d_%H%M%S.csv")
-            self.log_path = output_dir / filename
-            self._log_file = self.log_path.open(
-                "w", encoding="utf-8", newline=""
-            )
-            self._csv_writer = csv.writer(self._log_file)
-            self._csv_writer.writerow(CSV_HEADER)
-            self._log_file.flush()
+        self._recording = False
+        self._record_dirty = False
+        self._record_columns = [array("d") for _ in CSV_HEADER]
 
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -87,17 +75,14 @@ class ForceSensorMonitor(Node):
         )
 
         self.get_logger().info(f"实时监视话题: {self.topic_name}")
-        if self.log_path is not None:
-            self.get_logger().info(f"CSV 自动保存: {self.log_path}")
-        else:
-            self.get_logger().warning("CSV 自动保存已关闭")
+        self.get_logger().info("CSV 自动保存已关闭，请使用曲线窗口按钮记录和保存")
 
     def _on_wrench(self, message: WrenchStamped):
         receive_monotonic = time.monotonic()
+        self._last_receive_monotonic = receive_monotonic
         wall_time = time.time()
         if self._first_receive_monotonic is None:
             self._first_receive_monotonic = receive_monotonic
-            self._last_flush_monotonic = receive_monotonic
 
         elapsed = receive_monotonic - self._first_receive_monotonic
         values = (
@@ -118,14 +103,11 @@ class ForceSensorMonitor(Node):
             for channel, value in zip(self._channels, values):
                 channel.append(value)
             self.sample_count += 1
-
-        if self._csv_writer is not None:
-            self._csv_writer.writerow(
-                (wall_time, ros_stamp, elapsed, *values)
-            )
-            if receive_monotonic - self._last_flush_monotonic >= 1.0:
-                self._log_file.flush()
-                self._last_flush_monotonic = receive_monotonic
+            if self._recording:
+                row = (wall_time, ros_stamp, elapsed, *values)
+                for column, value in zip(self._record_columns, row):
+                    column.append(value)
+                self._record_dirty = True
 
         if self.print_rate_hz > 0.0:
             print_period = 1.0 / self.print_rate_hz
@@ -151,7 +133,8 @@ class ForceSensorMonitor(Node):
         times = times[start:]
         channels = [channel[start:] for channel in channels]
 
-        # Limit points drawn per refresh while retaining every sample in CSV.
+        # Limit points drawn per refresh. Button-controlled recording retains
+        # every received sample in a compact array of doubles.
         max_plot_points = 4000
         if len(times) > max_plot_points:
             step = (len(times) + max_plot_points - 1) // max_plot_points
@@ -159,11 +142,51 @@ class ForceSensorMonitor(Node):
             channels = [channel[::step] for channel in channels]
         return times, channels
 
-    def close_log(self):
-        if self._log_file is not None:
-            self._log_file.flush()
-            self._log_file.close()
-            self._log_file = None
+    def data_age(self) -> float:
+        if self._last_receive_monotonic is None:
+            return float("inf")
+        return time.monotonic() - self._last_receive_monotonic
+
+    def start_recording(self):
+        with self._lock:
+            self._recording = True
+
+    def stop_recording(self):
+        with self._lock:
+            self._recording = False
+
+    def clear_recording(self):
+        with self._lock:
+            self._recording = False
+            for column in self._record_columns:
+                del column[:]
+            self._record_dirty = False
+
+    def recording_state(self):
+        with self._lock:
+            return (
+                self._recording,
+                len(self._record_columns[0]),
+                self._record_dirty,
+            )
+
+    def save_csv(self, path: Path) -> int:
+        with self._lock:
+            columns = [array("d", column) for column in self._record_columns]
+
+        sample_count = len(columns[0])
+        if sample_count == 0:
+            return 0
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8", newline="") as log_file:
+            writer = csv.writer(log_file)
+            writer.writerow(CSV_HEADER)
+            writer.writerows(zip(*columns))
+
+        with self._lock:
+            self._record_dirty = False
+        return sample_count
 
 
 def _spin_executor(executor):
@@ -177,6 +200,8 @@ def main(args=None):
     try:
         import matplotlib.pyplot as plt
         from matplotlib.animation import FuncAnimation
+        from matplotlib.widgets import Button
+        from tkinter import filedialog
     except ImportError as exc:
         raise SystemExit(
             "缺少 matplotlib，请执行: sudo apt install python3-matplotlib"
@@ -213,12 +238,107 @@ def main(args=None):
         force_axis.legend(loc="upper right", ncol=3)
         torque_axis.legend(loc="upper right", ncol=3)
         status = figure.suptitle("Waiting for /force_sensor/force ...")
-        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+        record_status = figure.text(
+            0.5,
+            0.095,
+            "Not recording. Live curves are not saved automatically.",
+            ha="center",
+        )
+        figure.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
+
+        start_button = Button(
+            figure.add_axes((0.08, 0.02, 0.18, 0.055)), "Start / Resume"
+        )
+        stop_button = Button(
+            figure.add_axes((0.29, 0.02, 0.18, 0.055)), "Stop Recording"
+        )
+        save_button = Button(
+            figure.add_axes((0.53, 0.02, 0.18, 0.055)), "Save CSV..."
+        )
+        clear_button = Button(
+            figure.add_axes((0.74, 0.02, 0.18, 0.055)), "Clear Buffer"
+        )
+
+        def update_record_status(message=None):
+            recording, count, dirty = node.recording_state()
+            if message is None:
+                state = "RECORDING" if recording else "STOPPED"
+                unsaved = " | unsaved" if dirty else ""
+                message = f"{state} | buffered samples: {count}{unsaved}"
+            record_status.set_text(message)
+            figure.canvas.draw_idle()
+
+        def start_recording(_event):
+            node.start_recording()
+            update_record_status()
+
+        def stop_recording(_event):
+            node.stop_recording()
+            update_record_status()
+
+        def clear_recording(_event):
+            node.clear_recording()
+            update_record_status("Buffer cleared. Nothing will be saved.")
+
+        def save_recording(_event):
+            node.stop_recording()
+            _, count, _ = node.recording_state()
+            if count == 0:
+                update_record_status("No recorded samples. Click Start / Resume first.")
+                return
+
+            node.output_dir.mkdir(parents=True, exist_ok=True)
+            filename = datetime.now().strftime("m3815_%Y%m%d_%H%M%S.csv")
+            parent = getattr(figure.canvas.manager, "window", None)
+            path = filedialog.asksaveasfilename(
+                parent=parent,
+                title="Save M3815 force sensor data",
+                initialdir=str(node.output_dir),
+                initialfile=filename,
+                defaultextension=".csv",
+                filetypes=(("CSV text", "*.csv"), ("All files", "*.*")),
+            )
+            if not path:
+                update_record_status("Save cancelled. Data remains in memory.")
+                return
+
+            try:
+                saved_count = node.save_csv(Path(path))
+                update_record_status(
+                    f"Saved {saved_count} samples to {Path(path).name}"
+                )
+                print(f"\nCSV 已保存: {path}", flush=True)
+            except Exception as exc:
+                node.get_logger().error(f"保存 CSV 失败: {exc}")
+                update_record_status(f"Save failed: {exc}")
+
+        start_button.on_clicked(start_recording)
+        stop_button.on_clicked(stop_recording)
+        save_button.on_clicked(save_recording)
+        clear_button.on_clicked(clear_recording)
+        figure._force_sensor_buttons = (
+            start_button,
+            stop_button,
+            save_button,
+            clear_button,
+        )
 
         def update_plot(_frame):
             times, channels = node.snapshot()
             if not times:
+                status.set_color("red")
+                status.set_text("NO LIVE DATA - waiting for force sensor topic")
                 return (*force_lines, *torque_lines, status)
+
+            data_age = node.data_age()
+            if data_age > 1.0:
+                for line in (*force_lines, *torque_lines):
+                    line.set_data([], [])
+                status.set_color("red")
+                status.set_text(
+                    f"NO LIVE DATA - last sample {data_age:.1f} s ago"
+                )
+                return (*force_lines, *torque_lines, status, record_status)
 
             for line, values in zip(force_lines, channels[:3]):
                 line.set_data(times, values)
@@ -232,11 +352,18 @@ def main(args=None):
             force_axis.autoscale_view(scalex=False, scaley=True)
             torque_axis.relim()
             torque_axis.autoscale_view(scalex=False, scaley=True)
+            status.set_color("black")
             status.set_text(
                 f"M3815 six-axis force sensor | samples: {node.sample_count} | "
                 f"window: {node.window_seconds:g} s"
             )
-            return (*force_lines, *torque_lines, status)
+            recording, count, dirty = node.recording_state()
+            state = "RECORDING" if recording else "STOPPED"
+            unsaved = " | unsaved" if dirty else ""
+            record_status.set_text(
+                f"{state} | buffered samples: {count}{unsaved}"
+            )
+            return (*force_lines, *torque_lines, status, record_status)
 
         animation = FuncAnimation(
             figure,
@@ -255,13 +382,15 @@ def main(args=None):
             plt.close(figure)
         executor.shutdown(timeout_sec=2.0)
         spin_thread.join(timeout=2.0)
-        node.close_log()
-        log_path = node.log_path
+        _, buffered_count, dirty = node.recording_state()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
-        if log_path is not None:
-            print(f"\nCSV 已保存: {log_path}")
+        if dirty:
+            print(
+                f"\n警告: {buffered_count} 条记录未保存，关闭窗口后已丢弃。",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":
