@@ -208,7 +208,12 @@ def main(args=None):
         ) from exc
 
     rclpy.init(args=args)
-    node = ForceSensorMonitor()
+    try:
+        node = ForceSensorMonitor()
+    except (KeyboardInterrupt, ExternalShutdownException):
+        if rclpy.ok():
+            rclpy.shutdown()
+        return
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     spin_thread = threading.Thread(
