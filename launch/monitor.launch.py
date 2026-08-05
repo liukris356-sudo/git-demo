@@ -15,6 +15,9 @@ def generate_launch_description():
     window_seconds = LaunchConfiguration("window_seconds")
     print_rate_hz = LaunchConfiguration("print_rate_hz")
     plot_rate_hz = LaunchConfiguration("plot_rate_hz")
+    display_sample_rate_hz = LaunchConfiguration("display_sample_rate_hz")
+    display_cutoff_hz = LaunchConfiguration("display_cutoff_hz")
+    dominant_threshold_n = LaunchConfiguration("dominant_threshold_n")
     output_dir = LaunchConfiguration("output_dir")
 
     sensor_node = Node(
@@ -48,6 +51,15 @@ def generate_launch_description():
                 "plot_rate_hz": ParameterValue(
                     plot_rate_hz, value_type=float
                 ),
+                "display_sample_rate_hz": ParameterValue(
+                    display_sample_rate_hz, value_type=float
+                ),
+                "display_cutoff_hz": ParameterValue(
+                    display_cutoff_hz, value_type=float
+                ),
+                "dominant_threshold_n": ParameterValue(
+                    dominant_threshold_n, value_type=float
+                ),
                 "output_dir": output_dir,
             }
         ],
@@ -64,6 +76,13 @@ def generate_launch_description():
             DeclareLaunchArgument("window_seconds", default_value="10.0"),
             DeclareLaunchArgument("print_rate_hz", default_value="5.0"),
             DeclareLaunchArgument("plot_rate_hz", default_value="20.0"),
+            DeclareLaunchArgument(
+                "display_sample_rate_hz", default_value="25.0"
+            ),
+            DeclareLaunchArgument("display_cutoff_hz", default_value="8.0"),
+            DeclareLaunchArgument(
+                "dominant_threshold_n", default_value="0.10"
+            ),
             DeclareLaunchArgument(
                 "output_dir", default_value="~/force_sensor_logs"
             ),

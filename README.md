@@ -29,7 +29,7 @@
 
 ```bash
 sudo apt update
-sudo apt install python3-serial python3-matplotlib python3-tk
+sudo apt install python3-serial python3-matplotlib python3-tk fonts-noto-cjk
 ```
 
 如果当前用户没有串口权限：
@@ -194,14 +194,17 @@ ros2 launch force_sensor_yl monitor.launch.py \
 
 启动后会自动完成以下操作：
 
-- 打开实时曲线窗口，上图显示 `Fx/Fy/Fz`，下图显示 `Mx/My/Mz`
-- 曲线默认显示最近 10 秒数据
+- 打开实时曲线窗口，上图显示 `Fx/Fy/Fz`，中图显示 `Mx/My/Mz`
+- 第三张曲线显示传感器坐标系下的主导力方向：`±X/±Y/±Z`
+- 中文界面实时显示当前六轴滤波值和当前主导方向
+- 曲线默认显示最近 10 秒数据；显示端使用 8 Hz 低通和 25 Hz 降采样，避免 500 Hz 原始点挤成色块
+- 点击 `暂停显示` 可冻结当前曲线和当前时刻六轴值，再点击 `继续显示` 跳回最新数据；后台接收与记录不受影响
 - 终端默认每秒打印 5 次六轴数据
 - 不会自动写入磁盘，实时曲线本身不等于正在记录
-- 点击 `Start / Resume` 后才开始把全部 500 Hz 数据暂存在内存
-- 点击 `Stop Recording` 停止记录，实时曲线仍继续显示
-- 点击 `Save CSV...` 后选择文件位置，才会真正保存到磁盘
-- 点击 `Clear Buffer` 可丢弃内存中尚未保存的数据
+- 点击 `开始/继续记录` 后才开始把全部 500 Hz 数据暂存在内存
+- 点击 `停止记录` 停止记录，实时曲线仍继续显示
+- 点击 `保存CSV……` 后选择文件位置，才会真正保存到磁盘
+- 点击 `清空记录` 可丢弃内存中尚未保存的数据
 
 关闭窗口或按 `Ctrl+C` 前请先保存需要的数据；未保存的内存数据会被丢弃。
 
@@ -213,6 +216,9 @@ ros2 launch force_sensor_yl monitor.launch.py \
   window_seconds:=20.0 \
   print_rate_hz:=10.0 \
   plot_rate_hz:=20.0 \
+  display_sample_rate_hz:=25.0 \
+  display_cutoff_hz:=8.0 \
+  dominant_threshold_n:=0.10 \
   output_dir:="$HOME/force_sensor_logs"
 ```
 
@@ -221,9 +227,14 @@ ros2 launch force_sensor_yl monitor.launch.py \
 | `window_seconds` | `10.0` | 曲线显示最近多少秒 |
 | `print_rate_hz` | `5.0` | 终端每秒打印次数，设为 `0.0` 可关闭打印 |
 | `plot_rate_hz` | `20.0` | 曲线每秒刷新次数 |
+| `display_sample_rate_hz` | `25.0` | 曲线每秒保留的显示点数，不影响 CSV 原始数据 |
+| `display_cutoff_hz` | `8.0` | 只作用于曲线和当前值显示的低通截止频率 |
+| `dominant_threshold_n` | `0.10` | 小于此值时显示“无明显主导力” |
 | `output_dir` | `~/force_sensor_logs` | 保存对话框默认打开的目录 |
 
-CSV 每行包含：系统时间、ROS 消息时间、启动后经过时间以及六轴力/力矩。单位直接写在列名中：力为 N，力矩为 Nm。记录暂存在紧凑的双精度数组中，长时间记录仍会占用内存，建议完成一个实验后及时停止并保存或清空。
+CSV 每行包含：系统时间、ROS 消息时间、启动后经过时间以及六轴原始力/力矩。显示滤波和显示降采样不会改变 CSV。单位直接写在列名中：力为 N，力矩为 Nm。记录暂存在紧凑的双精度数组中，长时间记录仍会占用内存，建议完成一个实验后及时停止并保存或清空。
+
+主导方向只比较 `Fx/Fy/Fz` 三个力分量的绝对值，并使用 20% 切换滞回避免两个方向接近时频繁跳动。显示的方向属于 `force_sensor_link` 传感器坐标系；安装到机械臂后，需要配置正确 TF 才能转换成法兰、工具或基座方向。
 
 如果传感器 ROS2 节点已经单独运行，只启动监视器即可：
 

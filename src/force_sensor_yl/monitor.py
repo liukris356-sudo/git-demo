@@ -1,5 +1,6 @@
 import bisect
 import csv
+import math
 import threading
 import time
 from array import array
@@ -36,6 +37,9 @@ class ForceSensorMonitor(Node):
         self.declare_parameter("window_seconds", 10.0)
         self.declare_parameter("print_rate_hz", 5.0)
         self.declare_parameter("plot_rate_hz", 20.0)
+        self.declare_parameter("display_sample_rate_hz", 25.0)
+        self.declare_parameter("display_cutoff_hz", 8.0)
+        self.declare_parameter("dominant_threshold_n", 0.10)
         self.declare_parameter("output_dir", "~/force_sensor_logs")
 
         self.topic_name = str(self.get_parameter("topic_name").value)
@@ -48,18 +52,36 @@ class ForceSensorMonitor(Node):
         self.plot_rate_hz = max(
             1.0, float(self.get_parameter("plot_rate_hz").value)
         )
+        self.display_sample_rate_hz = max(
+            1.0, float(self.get_parameter("display_sample_rate_hz").value)
+        )
+        self.display_cutoff_hz = max(
+            0.1, float(self.get_parameter("display_cutoff_hz").value)
+        )
+        self.dominant_threshold_n = max(
+            0.0, float(self.get_parameter("dominant_threshold_n").value)
+        )
         self.output_dir = Path(
             str(self.get_parameter("output_dir").value)
         ).expanduser()
 
-        # Keep enough history for sensors running at up to 1 kHz.
-        max_samples = max(2000, int(self.window_seconds * 1000.0) + 1000)
+        # The plot keeps a filtered, decimated display stream. CSV recording
+        # remains at the full incoming sensor rate.
+        max_samples = max(
+            500,
+            int(self.window_seconds * self.display_sample_rate_hz) + 200,
+        )
         self._times = deque(maxlen=max_samples)
         self._channels = [deque(maxlen=max_samples) for _ in CHANNEL_NAMES]
+        self._dominant_codes = deque(maxlen=max_samples)
         self._lock = threading.Lock()
         self._first_receive_monotonic = None
         self._last_receive_monotonic = None
+        self._last_display_monotonic = None
         self._last_print_monotonic = 0.0
+        self._filtered_values = None
+        self._latest_values = None
+        self._dominant_axis = None
         self.sample_count = 0
         self._recording = False
         self._record_dirty = False
@@ -75,6 +97,11 @@ class ForceSensorMonitor(Node):
         )
 
         self.get_logger().info(f"实时监视话题: {self.topic_name}")
+        self.get_logger().info(
+            f"显示滤波 {self.display_cutoff_hz:.1f} Hz，"
+            f"显示采样 {self.display_sample_rate_hz:.1f} Hz；"
+            "CSV 记录保持原始速率"
+        )
         self.get_logger().info("CSV 自动保存已关闭，请使用曲线窗口按钮记录和保存")
 
     def _on_wrench(self, message: WrenchStamped):
@@ -99,15 +126,35 @@ class ForceSensorMonitor(Node):
         )
 
         with self._lock:
-            self._times.append(elapsed)
-            for channel, value in zip(self._channels, values):
-                channel.append(value)
+            self._latest_values = values
             self.sample_count += 1
             if self._recording:
                 row = (wall_time, ros_stamp, elapsed, *values)
                 for column, value in zip(self._record_columns, row):
                     column.append(value)
                 self._record_dirty = True
+
+            if self._filtered_values is None:
+                self._filtered_values = list(values)
+            else:
+                # Nominal 500 Hz is used deliberately because USB serial data
+                # can arrive in bursts with near-zero host-side intervals.
+                alpha = 1.0 - math.exp(
+                    -2.0 * math.pi * self.display_cutoff_hz / 500.0
+                )
+                for index, value in enumerate(values):
+                    self._filtered_values[index] += alpha * (
+                        value - self._filtered_values[index]
+                    )
+
+            display_period = 1.0 / self.display_sample_rate_hz
+            if (
+                self._last_display_monotonic is None
+                or receive_monotonic - self._last_display_monotonic
+                >= display_period
+            ):
+                self._last_display_monotonic = receive_monotonic
+                self._append_display_sample(elapsed)
 
         if self.print_rate_hz > 0.0:
             print_period = 1.0 / self.print_rate_hz
@@ -120,27 +167,48 @@ class ForceSensorMonitor(Node):
                     flush=True,
                 )
 
+    def _append_display_sample(self, elapsed):
+        values = tuple(self._filtered_values)
+        self._times.append(elapsed)
+        for channel, value in zip(self._channels, values):
+            channel.append(value)
+
+        force_abs = [abs(value) for value in values[:3]]
+        candidate = max(range(3), key=force_abs.__getitem__)
+        if force_abs[candidate] < self.dominant_threshold_n:
+            self._dominant_axis = None
+            dominant_code = 0
+        else:
+            if self._dominant_axis is not None and candidate != self._dominant_axis:
+                current_value = force_abs[self._dominant_axis]
+                if force_abs[candidate] < current_value * 1.20:
+                    candidate = self._dominant_axis
+            self._dominant_axis = candidate
+            sign = 1 if values[candidate] >= 0.0 else -1
+            dominant_code = sign * (candidate + 1)
+        self._dominant_codes.append(dominant_code)
+
     def snapshot(self):
         with self._lock:
             times = list(self._times)
             channels = [list(channel) for channel in self._channels]
+            dominant_codes = list(self._dominant_codes)
 
         if not times:
-            return times, channels
+            return times, channels, dominant_codes
 
         cutoff = times[-1] - self.window_seconds
         start = bisect.bisect_left(times, cutoff)
         times = times[start:]
         channels = [channel[start:] for channel in channels]
+        dominant_codes = dominant_codes[start:]
+        return times, channels, dominant_codes
 
-        # Limit points drawn per refresh. Button-controlled recording retains
-        # every received sample in a compact array of doubles.
-        max_plot_points = 4000
-        if len(times) > max_plot_points:
-            step = (len(times) + max_plot_points - 1) // max_plot_points
-            times = times[::step]
-            channels = [channel[::step] for channel in channels]
-        return times, channels
+    def latest_display_values(self):
+        with self._lock:
+            if self._filtered_values is None:
+                return None
+            return tuple(self._filtered_values)
 
     def data_age(self) -> float:
         if self._last_receive_monotonic is None:
@@ -223,8 +291,21 @@ def main(args=None):
 
     figure = None
     try:
-        figure, (force_axis, torque_axis) = plt.subplots(
-            2, 1, figsize=(12, 8), sharex=True
+        plt.rcParams["font.sans-serif"] = [
+            "Noto Sans CJK SC",
+            "WenQuanYi Zen Hei",
+            "SimHei",
+            "Microsoft YaHei",
+            "DejaVu Sans",
+        ]
+        plt.rcParams["axes.unicode_minus"] = False
+
+        figure, (force_axis, torque_axis, dominant_axis) = plt.subplots(
+            3,
+            1,
+            figsize=(12, 10),
+            sharex=True,
+            gridspec_kw={"height_ratios": (2.0, 2.0, 1.0)},
         )
         force_lines = [
             force_axis.plot([], [], label=name, linewidth=1.0)[0]
@@ -234,42 +315,87 @@ def main(args=None):
             torque_axis.plot([], [], label=name, linewidth=1.0)[0]
             for name in CHANNEL_NAMES[3:]
         ]
+        dominant_line = dominant_axis.step(
+            [], [], where="post", color="#7b2cbf", linewidth=1.5
+        )[0]
 
-        force_axis.set_ylabel("Force (N)")
-        torque_axis.set_ylabel("Torque (Nm)")
-        torque_axis.set_xlabel("Elapsed time (s)")
+        force_axis.set_ylabel("力（N）")
+        torque_axis.set_ylabel("力矩（Nm）")
+        dominant_axis.set_ylabel("主导方向")
+        dominant_axis.set_xlabel("经过时间（秒）")
         force_axis.grid(True, alpha=0.3)
         torque_axis.grid(True, alpha=0.3)
+        dominant_axis.grid(True, alpha=0.3)
         force_axis.legend(loc="upper right", ncol=3)
         torque_axis.legend(loc="upper right", ncol=3)
-        status = figure.suptitle("Waiting for /force_sensor/force ...")
+        dominant_axis.set_yticks((-3, -2, -1, 0, 1, 2, 3))
+        dominant_axis.set_yticklabels(("-Z", "-Y", "-X", "无", "+X", "+Y", "+Z"))
+        dominant_axis.set_ylim(-3.4, 3.4)
+        status = figure.suptitle("正在等待六维力传感器数据……")
+        current_values = figure.text(
+            0.5,
+            0.132,
+            "当前值：尚无数据",
+            ha="center",
+            fontsize=10,
+        )
         record_status = figure.text(
             0.5,
-            0.095,
-            "Not recording. Live curves are not saved automatically.",
+            0.088,
+            "未记录：实时曲线不会自动保存",
             ha="center",
         )
-        figure.tight_layout(rect=(0.0, 0.14, 1.0, 0.96))
+        figure.tight_layout(rect=(0.0, 0.18, 1.0, 0.96))
 
         start_button = Button(
-            figure.add_axes((0.08, 0.02, 0.18, 0.055)), "Start / Resume"
+            figure.add_axes((0.025, 0.02, 0.17, 0.052)), "开始/继续记录"
         )
         stop_button = Button(
-            figure.add_axes((0.29, 0.02, 0.18, 0.055)), "Stop Recording"
+            figure.add_axes((0.215, 0.02, 0.17, 0.052)), "停止记录"
         )
         save_button = Button(
-            figure.add_axes((0.53, 0.02, 0.18, 0.055)), "Save CSV..."
+            figure.add_axes((0.405, 0.02, 0.17, 0.052)), "保存CSV……"
         )
         clear_button = Button(
-            figure.add_axes((0.74, 0.02, 0.18, 0.055)), "Clear Buffer"
+            figure.add_axes((0.595, 0.02, 0.17, 0.052)), "清空记录"
         )
+        pause_button = Button(
+            figure.add_axes((0.785, 0.02, 0.17, 0.052)), "暂停显示"
+        )
+
+        display_paused = False
+        paused_snapshot = None
+        paused_values = None
+
+        def format_current_values(values, dominant_code, paused=False):
+            if values is None:
+                return "当前值：尚无数据"
+            fx, fy, fz, mx, my, mz = values
+            prefix = "暂停时刻" if paused else "当前滤波值"
+            numeric = (
+                f"{prefix}：Fx={fx:+.3f} N  Fy={fy:+.3f} N  "
+                f"Fz={fz:+.3f} N  Mx={mx:+.4f} Nm  "
+                f"My={my:+.4f} Nm  Mz={mz:+.4f} Nm"
+            )
+            if dominant_code == 0:
+                dominant = "无明显主导力"
+            else:
+                axis_index = abs(int(dominant_code)) - 1
+                direction = ("+" if dominant_code > 0 else "-") + "XYZ"[
+                    axis_index
+                ]
+                dominant = (
+                    f"主导力（传感器坐标系）：{direction} "
+                    f"({values[axis_index]:+.3f} N)"
+                )
+            return f"{numeric}\n{dominant}"
 
         def update_record_status(message=None):
             recording, count, dirty = node.recording_state()
             if message is None:
-                state = "RECORDING" if recording else "STOPPED"
-                unsaved = " | unsaved" if dirty else ""
-                message = f"{state} | buffered samples: {count}{unsaved}"
+                state = "正在记录" if recording else "记录已停止"
+                unsaved = "｜尚未保存" if dirty else ""
+                message = f"{state}｜缓存样本：{count}{unsaved}"
             record_status.set_text(message)
             figure.canvas.draw_idle()
 
@@ -283,13 +409,13 @@ def main(args=None):
 
         def clear_recording(_event):
             node.clear_recording()
-            update_record_status("Buffer cleared. Nothing will be saved.")
+            update_record_status("记录缓存已清空，不会保存任何数据")
 
         def save_recording(_event):
             node.stop_recording()
             _, count, _ = node.recording_state()
             if count == 0:
-                update_record_status("No recorded samples. Click Start / Resume first.")
+                update_record_status("没有可保存的数据，请先点击“开始/继续记录”")
                 return
 
             node.output_dir.mkdir(parents=True, exist_ok=True)
@@ -297,58 +423,91 @@ def main(args=None):
             parent = getattr(figure.canvas.manager, "window", None)
             path = filedialog.asksaveasfilename(
                 parent=parent,
-                title="Save M3815 force sensor data",
+                title="保存 M3815 六维力数据",
                 initialdir=str(node.output_dir),
                 initialfile=filename,
                 defaultextension=".csv",
-                filetypes=(("CSV text", "*.csv"), ("All files", "*.*")),
+                filetypes=(("CSV 文本", "*.csv"), ("所有文件", "*.*")),
             )
             if not path:
-                update_record_status("Save cancelled. Data remains in memory.")
+                update_record_status("已取消保存，数据仍保留在内存中")
                 return
 
             try:
                 saved_count = node.save_csv(Path(path))
                 update_record_status(
-                    f"Saved {saved_count} samples to {Path(path).name}"
+                    f"已保存 {saved_count} 条样本到 {Path(path).name}"
                 )
                 print(f"\nCSV 已保存: {path}", flush=True)
             except Exception as exc:
                 node.get_logger().error(f"保存 CSV 失败: {exc}")
-                update_record_status(f"Save failed: {exc}")
+                update_record_status(f"保存失败：{exc}")
+
+        def toggle_pause(_event):
+            nonlocal display_paused, paused_snapshot, paused_values
+            if not display_paused:
+                paused_snapshot = node.snapshot()
+                paused_values = node.latest_display_values()
+                display_paused = True
+                pause_button.label.set_text("继续显示")
+            else:
+                display_paused = False
+                paused_snapshot = None
+                paused_values = None
+                pause_button.label.set_text("暂停显示")
+            figure.canvas.draw_idle()
 
         start_button.on_clicked(start_recording)
         stop_button.on_clicked(stop_recording)
         save_button.on_clicked(save_recording)
         clear_button.on_clicked(clear_recording)
+        pause_button.on_clicked(toggle_pause)
         figure._force_sensor_buttons = (
             start_button,
             stop_button,
             save_button,
             clear_button,
+            pause_button,
         )
 
         def update_plot(_frame):
-            times, channels = node.snapshot()
+            if display_paused and paused_snapshot is not None:
+                times, channels, dominant_codes = paused_snapshot
+                values = paused_values
+            else:
+                times, channels, dominant_codes = node.snapshot()
+                values = node.latest_display_values()
+
             if not times:
                 status.set_color("red")
-                status.set_text("NO LIVE DATA - waiting for force sensor topic")
-                return (*force_lines, *torque_lines, status)
+                status.set_text("无实时数据——正在等待传感器话题")
+                current_values.set_text("当前值：尚无数据")
+                return (*force_lines, *torque_lines, dominant_line, status)
 
             data_age = node.data_age()
-            if data_age > 1.0:
+            if not display_paused and data_age > 1.0:
                 for line in (*force_lines, *torque_lines):
                     line.set_data([], [])
+                dominant_line.set_data([], [])
                 status.set_color("red")
                 status.set_text(
-                    f"NO LIVE DATA - last sample {data_age:.1f} s ago"
+                    f"无实时数据——最后一帧距今 {data_age:.1f} 秒"
                 )
-                return (*force_lines, *torque_lines, status, record_status)
+                current_values.set_text("当前值：数据已断流")
+                return (
+                    *force_lines,
+                    *torque_lines,
+                    dominant_line,
+                    status,
+                    record_status,
+                    current_values,
+                )
 
-            for line, values in zip(force_lines, channels[:3]):
-                line.set_data(times, values)
-            for line, values in zip(torque_lines, channels[3:]):
-                line.set_data(times, values)
+            for line, series in zip(force_lines, channels[:3]):
+                line.set_data(times, series)
+            for line, series in zip(torque_lines, channels[3:]):
+                line.set_data(times, series)
+            dominant_line.set_data(times, dominant_codes)
 
             right = times[-1]
             left = max(0.0, right - node.window_seconds)
@@ -357,18 +516,36 @@ def main(args=None):
             force_axis.autoscale_view(scalex=False, scaley=True)
             torque_axis.relim()
             torque_axis.autoscale_view(scalex=False, scaley=True)
-            status.set_color("black")
-            status.set_text(
-                f"M3815 six-axis force sensor | samples: {node.sample_count} | "
-                f"window: {node.window_seconds:g} s"
+            if display_paused:
+                status.set_color("#d97706")
+                status.set_text(
+                    "显示已暂停——后台接收和正在进行的记录不受影响"
+                )
+            else:
+                status.set_color("black")
+                status.set_text(
+                    f"M3815 六维力传感器｜实时样本：{node.sample_count}｜"
+                    f"显示窗口：{node.window_seconds:g} 秒｜"
+                    f"显示滤波：{node.display_cutoff_hz:g} Hz"
+                )
+            dominant_code = dominant_codes[-1] if dominant_codes else 0
+            current_values.set_text(
+                format_current_values(values, dominant_code, display_paused)
             )
             recording, count, dirty = node.recording_state()
-            state = "RECORDING" if recording else "STOPPED"
-            unsaved = " | unsaved" if dirty else ""
+            state = "正在记录" if recording else "记录已停止"
+            unsaved = "｜尚未保存" if dirty else ""
             record_status.set_text(
-                f"{state} | buffered samples: {count}{unsaved}"
+                f"{state}｜缓存样本：{count}{unsaved}"
             )
-            return (*force_lines, *torque_lines, status, record_status)
+            return (
+                *force_lines,
+                *torque_lines,
+                dominant_line,
+                status,
+                record_status,
+                current_values,
+            )
 
         animation = FuncAnimation(
             figure,
