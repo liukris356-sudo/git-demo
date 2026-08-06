@@ -28,6 +28,10 @@ endif()
 if(NOT EXISTS "${XCORE_SDK_ROOT}/include/rokae/robot.h")
   message(FATAL_ERROR "Invalid XCORE_SDK_ROOT: ${XCORE_SDK_ROOT}")
 endif()
+if(NOT EXISTS "${XCORE_SDK_ROOT}/external/Eigen/Core")
+  message(FATAL_ERROR
+    "Bundled Eigen headers not found: ${XCORE_SDK_ROOT}/external/Eigen/Core")
+endif()
 
 if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$")
   message(FATAL_ERROR "Unsupported CPU architecture: ${CMAKE_SYSTEM_PROCESSOR}")
@@ -44,7 +48,11 @@ if(NOT EXISTS "${XMATE_MODEL_LIBRARY}")
 endif()
 
 add_executable(ar_admittance_z_node src/ar_admittance_z_node.cpp)
-target_include_directories(ar_admittance_z_node PRIVATE "${XCORE_SDK_ROOT}/include")
+target_include_directories(ar_admittance_z_node PRIVATE
+  "${XCORE_SDK_ROOT}/include"
+  "${XCORE_SDK_ROOT}/external")
+target_compile_definitions(ar_admittance_z_node PRIVATE
+  EIGEN_DONT_ALIGN_STATICALLY)
 ament_target_dependencies(ar_admittance_z_node geometry_msgs rclcpp)
 target_link_libraries(ar_admittance_z_node
   "${XCORE_STATIC_LIBRARY}"
