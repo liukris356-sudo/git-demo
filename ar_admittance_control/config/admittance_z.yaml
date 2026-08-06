@@ -1,0 +1,32 @@
+ar_admittance_z_node:
+  ros__parameters:
+    # false = shadow mode: compute and publish only; the robot is never connected.
+    # Keep this false until sensor direction, tare and thresholds are verified.
+    active_control: false
+
+    robot_ip: "192.168.2.160"
+    local_ip: "192.168.2.100"
+    # Unique external-sensor topic, separate from robot internal wrench topics.
+    wrench_topic: "/m3815/wrench_raw"
+    duration_s: 15.0
+
+    # The first live version intentionally uses only sensor Fz -> tool Z.
+    # Change force_sign to -1.0 if pushing +tool-Z produces a negative Fz.
+    force_sign: 1.0
+
+    # M*x_ddot + D*x_dot + K*x = F_external.
+    virtual_mass_kg: 30.0
+    damping_n_s_m: 250.0
+    stiffness_n_m: 1000.0
+    force_deadband_n: 2.0
+    filter_cutoff_hz: 10.0
+
+    # Conservative first-test envelopes.
+    max_offset_m: 0.010
+    max_velocity_m_s: 0.010
+    hard_force_n: 20.0
+    hard_torque_nm: 3.0
+    quiet_force_n: 3.0
+    quiet_torque_nm: 0.8
+    wrench_timeout_s: 0.050
+    quiet_duration_s: 2.0
