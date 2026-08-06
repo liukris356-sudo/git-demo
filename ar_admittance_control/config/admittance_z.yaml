@@ -10,8 +10,12 @@ ar_admittance_z_node:
     wrench_topic: "/m3815/wrench_raw"
     duration_s: 15.0
 
-    # The first live version intentionally uses only sensor Fz -> tool Z.
-    # Change force_sign to -1.0 if pushing +tool-Z produces a negative Fz.
+    # Single-axis mapping. Defaults to sensor Fx -> robot tool X so that a
+    # sensor fixed flat on a table can be pushed from the side.
+    # Allowed values for both axes: "x", "y", "z".
+    sensor_force_axis: "x"
+    tool_motion_axis: "x"
+    # Change force_sign to -1.0 if motion is opposite to the intended direction.
     force_sign: 1.0
 
     # M*x_ddot + D*x_dot + K*x = F_external.

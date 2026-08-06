@@ -3,7 +3,7 @@
 <package format="3">
   <name>ar_admittance_control</name>
   <version>0.1.0</version>
-  <description>Guarded tool-Z admittance validation for a ROKAE AR robot and an external six-axis force sensor.</description>
+  <description>Guarded single-axis Cartesian admittance validation for a ROKAE AR robot and an external six-axis force sensor.</description>
   <maintainer email="user@example.com">ROS Developer</maintainer>
   <license>Proprietary</license>
 

@@ -45,6 +45,30 @@ double applyDeadband(double value, double deadband) {
   return std::copysign(magnitude - deadband, value);
 }
 
+std::size_t axisIndex(const std::string &axis) {
+  if (axis == "x") {
+    return 0;
+  }
+  if (axis == "y") {
+    return 1;
+  }
+  if (axis == "z") {
+    return 2;
+  }
+  throw std::invalid_argument("axis must be x, y or z");
+}
+
+void setVectorComponent(geometry_msgs::msg::Vector3 &vector,
+                        std::size_t axis, double value) {
+  if (axis == 0) {
+    vector.x = value;
+  } else if (axis == 1) {
+    vector.y = value;
+  } else {
+    vector.z = value;
+  }
+}
+
 double translationDistance(const std::array<double, 16> &a,
                            const std::array<double, 16> &b) {
   const double dx = a[3] - b[3];
@@ -110,6 +134,10 @@ class ArAdmittanceZNode final : public rclcpp::Node {
     wrench_topic_ =
         declare_parameter<std::string>("wrench_topic", "/m3815/wrench_raw");
     duration_s_ = declare_parameter<double>("duration_s", 15.0);
+    sensor_force_axis_ =
+        declare_parameter<std::string>("sensor_force_axis", "x");
+    tool_motion_axis_ =
+        declare_parameter<std::string>("tool_motion_axis", "x");
     force_sign_ = declare_parameter<double>("force_sign", 1.0);
     virtual_mass_kg_ = declare_parameter<double>("virtual_mass_kg", 30.0);
     damping_n_s_m_ = declare_parameter<double>("damping_n_s_m", 250.0);
@@ -127,6 +155,8 @@ class ArAdmittanceZNode final : public rclcpp::Node {
     quiet_duration_s_ = declare_parameter<double>("quiet_duration_s", 2.0);
 
     validateParameters();
+    sensor_force_index_ = axisIndex(sensor_force_axis_);
+    tool_motion_index_ = axisIndex(tool_motion_axis_);
 
     wrench_subscription_ = create_subscription<geometry_msgs::msg::WrenchStamped>(
         wrench_topic_, rclcpp::SensorDataQoS().keep_last(1),
@@ -150,8 +180,9 @@ class ArAdmittanceZNode final : public rclcpp::Node {
             "/admittance/velocity_tool", 10);
 
     RCLCPP_INFO(get_logger(),
-                "Mode: %s; wrench: %s; Fz -> tool Z; M=%.1f D=%.1f K=%.1f",
+                "Mode: %s; wrench: %s; F%s -> tool %s; M=%.1f D=%.1f K=%.1f",
                 active_control_ ? "ACTIVE" : "SHADOW", wrench_topic_.c_str(),
+                sensor_force_axis_.c_str(), tool_motion_axis_.c_str(),
                 virtual_mass_kg_, damping_n_s_m_, stiffness_n_m_);
     if (!active_control_) {
       RCLCPP_WARN(get_logger(),
@@ -188,6 +219,10 @@ class ArAdmittanceZNode final : public rclcpp::Node {
         !positive(hard_force_n_) || !positive(hard_torque_nm_) ||
         !positive(wrench_timeout_s_) || wrench_timeout_s_ > 0.2 ||
         !positive(quiet_duration_s_) ||
+        (sensor_force_axis_ != "x" && sensor_force_axis_ != "y" &&
+         sensor_force_axis_ != "z") ||
+        (tool_motion_axis_ != "x" && tool_motion_axis_ != "y" &&
+         tool_motion_axis_ != "z") ||
         !(force_sign_ == 1.0 || force_sign_ == -1.0)) {
       throw std::invalid_argument("invalid or unsafe admittance parameter");
     }
@@ -267,12 +302,13 @@ class ArAdmittanceZNode final : public rclcpp::Node {
     geometry_msgs::msg::Vector3Stamped offset;
     offset.header.stamp = stamp;
     offset.header.frame_id = "tool0";
-    offset.vector.z = axis.position_m;
+    setVectorComponent(offset.vector, tool_motion_index_, axis.position_m);
     offset_publisher_->publish(offset);
 
     geometry_msgs::msg::TwistStamped velocity;
     velocity.header = offset.header;
-    velocity.twist.linear.z = axis.velocity_m_s;
+    setVectorComponent(
+        velocity.twist.linear, tool_motion_index_, axis.velocity_m_s);
     velocity_publisher_->publish(velocity);
   }
 
@@ -282,8 +318,9 @@ class ArAdmittanceZNode final : public rclcpp::Node {
     }
 
     RCLCPP_INFO(get_logger(),
-                "SHADOW started for %.1f s. Push the sensor along its Z axis.",
-                duration_s_);
+                "SHADOW started for %.1f s. Push sensor %s; output is tool %s.",
+                duration_s_, sensor_force_axis_.c_str(),
+                tool_motion_axis_.c_str());
     AdmittanceAxis axis;
     const auto started = SteadyClock::now();
     auto next_tick = started;
@@ -302,7 +339,7 @@ class ArAdmittanceZNode final : public rclcpp::Node {
       }
 
       const double force = applyDeadband(
-          force_sign_ * wrench[2], force_deadband_n_);
+          force_sign_ * wrench[sensor_force_index_], force_deadband_n_);
       axis.step(force, 0.004, virtual_mass_kg_, damping_n_s_m_,
                 stiffness_n_m_, filter_cutoff_hz_, max_velocity_m_s_,
                 max_offset_m_);
@@ -310,8 +347,9 @@ class ArAdmittanceZNode final : public rclcpp::Node {
 
       if (now_time >= next_log) {
         RCLCPP_INFO(get_logger(),
-                    "Fz=%+.2f N, filtered=%+.2f N, dz=%+.2f mm, vz=%+.2f mm/s",
-                    wrench[2], axis.filtered_force_n,
+                    "F%s=%+.2f N, filtered=%+.2f N, d%s=%+.2f mm, v%s=%+.2f mm/s",
+                    sensor_force_axis_.c_str(), wrench[sensor_force_index_],
+                    axis.filtered_force_n, tool_motion_axis_.c_str(),
                     axis.position_m * 1000.0, axis.velocity_m_s * 1000.0);
         next_log = now_time + std::chrono::milliseconds(250);
       }
@@ -360,16 +398,17 @@ class ArAdmittanceZNode final : public rclcpp::Node {
     }
 
     RCLCPP_WARN(get_logger(),
-                "ACTIVE controls only tool Z and assumes sensor Z is aligned "
-                "with tool Z. No rokae_ros2 controller may be running.");
+                "ACTIVE maps sensor F%s to tool %s. Confirm this mapping and "
+                "sign in SHADOW first. No rokae_ros2 controller may be running.",
+                sensor_force_axis_.c_str(), tool_motion_axis_.c_str());
     std::cout
         << "Robot unloaded, workspace clear, E-stop reachable.\n"
         << "Sensor must be tared at the current stationary pose.\n"
-        << "Type ARM_ADMITTANCE_Z exactly to connect and power on: "
+        << "Type ARM_ADMITTANCE_AXIS exactly to connect and power on: "
         << std::flush;
     std::string confirmation;
     std::getline(std::cin, confirmation);
-    if (confirmation != "ARM_ADMITTANCE_Z") {
+    if (confirmation != "ARM_ADMITTANCE_AXIS") {
       RCLCPP_WARN(get_logger(), "Cancelled; robot was not connected.");
       return 0;
     }
@@ -444,14 +483,16 @@ class ArAdmittanceZNode final : public rclcpp::Node {
         throw std::runtime_error("read initial TCP, elbow or joints failed");
       }
 
-      const std::array<double, 3> tool_z_in_base{
-          hold_pose[2], hold_pose[6], hold_pose[10]};
+      const std::array<double, 3> tool_axis_in_base{
+          hold_pose[tool_motion_index_],
+          hold_pose[4 + tool_motion_index_],
+          hold_pose[8 + tool_motion_index_]};
       const double axis_norm =
-          std::sqrt(tool_z_in_base[0] * tool_z_in_base[0] +
-                    tool_z_in_base[1] * tool_z_in_base[1] +
-                    tool_z_in_base[2] * tool_z_in_base[2]);
+          std::sqrt(tool_axis_in_base[0] * tool_axis_in_base[0] +
+                    tool_axis_in_base[1] * tool_axis_in_base[1] +
+                    tool_axis_in_base[2] * tool_axis_in_base[2]);
       if (std::abs(axis_norm - 1.0) > 0.01) {
-        throw std::runtime_error("captured tool-Z axis is not normalized");
+        throw std::runtime_error("captured tool axis is not normalized");
       }
 
       RCLCPP_INFO(get_logger(),
@@ -521,14 +562,15 @@ class ArAdmittanceZNode final : public rclcpp::Node {
         }
 
         const double force = applyDeadband(
-            force_sign_ * wrench[2], force_deadband_n_);
+            force_sign_ * wrench[sensor_force_index_], force_deadband_n_);
         axis.step(force, kControlDt, virtual_mass_kg_, damping_n_s_m_,
                   stiffness_n_m_, filter_cutoff_hz_, max_velocity_m_s_,
                   max_offset_m_);
 
-        command.pos[3] = hold_pose[3] + tool_z_in_base[0] * axis.position_m;
-        command.pos[7] = hold_pose[7] + tool_z_in_base[1] * axis.position_m;
-        command.pos[11] = hold_pose[11] + tool_z_in_base[2] * axis.position_m;
+        command.pos[3] = hold_pose[3] + tool_axis_in_base[0] * axis.position_m;
+        command.pos[7] = hold_pose[7] + tool_axis_in_base[1] * axis.position_m;
+        command.pos[11] =
+            hold_pose[11] + tool_axis_in_base[2] * axis.position_m;
 
         const double elapsed =
             std::chrono::duration<double>(SteadyClock::now() - started).count();
@@ -542,9 +584,10 @@ class ArAdmittanceZNode final : public rclcpp::Node {
       controller->setControlLoop(callback, 0, true);
       controller->startMove(rokae::RtControllerMode::cartesianPosition);
       RCLCPP_WARN(get_logger(),
-                  "ARMED for %.1f s: external Fz commands at most %.1f mm "
-                  "along captured tool Z. Ctrl+C stops.",
-                  duration_s_, max_offset_m_ * 1000.0);
+                  "ARMED for %.1f s: sensor F%s commands at most %.1f mm "
+                  "along captured tool %s. Ctrl+C stops.",
+                  duration_s_, sensor_force_axis_.c_str(),
+                  max_offset_m_ * 1000.0, tool_motion_axis_.c_str());
       controller->startLoop(true);
 
       if (faulted_.load()) {
@@ -554,10 +597,11 @@ class ArAdmittanceZNode final : public rclcpp::Node {
                     static_cast<long>(loop_count.load()));
       }
       RCLCPP_INFO(get_logger(),
-                  "Final command state: dz=%+.2f mm, vz=%+.2f mm/s, "
-                  "filtered Fz=%+.2f N",
-                  axis.position_m * 1000.0, axis.velocity_m_s * 1000.0,
-                  axis.filtered_force_n);
+                  "Final command state: d%s=%+.2f mm, v%s=%+.2f mm/s, "
+                  "filtered F%s=%+.2f N",
+                  tool_motion_axis_.c_str(), axis.position_m * 1000.0,
+                  tool_motion_axis_.c_str(), axis.velocity_m_s * 1000.0,
+                  sensor_force_axis_.c_str(), axis.filtered_force_n);
       safeShutdown(robot, controller);
       return faulted_.load() ? 3 : 0;
     } catch (const std::exception &exception) {
@@ -571,6 +615,10 @@ class ArAdmittanceZNode final : public rclcpp::Node {
   std::string robot_ip_;
   std::string local_ip_;
   std::string wrench_topic_;
+  std::string sensor_force_axis_{"x"};
+  std::string tool_motion_axis_{"x"};
+  std::size_t sensor_force_index_{0};
+  std::size_t tool_motion_index_{0};
   double duration_s_{15.0};
   double force_sign_{1.0};
   double virtual_mass_kg_{30.0};

@@ -4,9 +4,9 @@ This ROS 2 package couples the SRI M3815CA2 driver in `force_sensor_yl` to a
 ROKAE AR5-R through xCoreSDK 0.7.1.ar_6.
 
 The default is **SHADOW mode**. It subscribes to the six-axis wrench, computes
-the virtual tool-Z displacement, and publishes diagnostics without connecting
+the virtual single-axis tool displacement, and publishes diagnostics without connecting
 to the robot. Live motion requires both `active_control:=true` and typing the
-exact terminal confirmation `ARM_ADMITTANCE_Z`.
+exact terminal confirmation `ARM_ADMITTANCE_AXIS`.
 
 ## Why this package does not command `rokae_ros2`
 
@@ -21,16 +21,16 @@ mode at the same time. Two motion owners must not connect to the robot.
 
 ## Implemented control law
 
-The first live stage is deliberately one-dimensional:
+The first live stage is deliberately one-dimensional and axis-configurable:
 
 ```text
-sensor Fz -> deadband -> low-pass -> M*x_ddot + D*x_dot + K*x = Fz
+selected sensor force -> deadband -> low-pass -> M*x_ddot + D*x_dot + K*x = F
                                              |
-                                             +-> captured tool-Z position
+                                             +-> selected captured tool axis
 ```
 
 The current TCP pose and AR elbow angle are captured at arm time. Orientation
-and elbow are held. Only the translation along the captured tool Z axis changes.
+and elbow are held. Only translation along the selected tool axis changes.
 This is position-based outer-loop admittance, not torque control and not the
 xCoreSDK Cartesian-impedance mode.
 
@@ -41,12 +41,12 @@ also requires enabled joint soft limits and at least a 10 degree margin.
 
 ## Coordinate requirement
 
-This first stage assumes the sensor Z axis is physically parallel to tool Z.
-If pushing along positive tool Z reports negative Fz, set `force_sign: -1.0`.
-Do not use ACTIVE mode if sensor Z and tool Z are not aligned. A later 6-D
-controller needs the calibrated sensor-to-tool transform and the wrench
-adjoint transform; guessing that transform can make the robot move in the
-wrong direction.
+`sensor_force_axis` chooses Fx, Fy or Fz. `tool_motion_axis` chooses tool X, Y
+or Z. The default is sensor Fx -> tool X for a sensor fixed flat on a table.
+If motion is opposite to the intended direction, set `force_sign: -1.0`.
+This explicit mapping is adequate for a detached one-axis communication test;
+a sensor mounted on the tool still needs a calibrated sensor-to-tool transform
+before enabling general multi-axis control.
 
 ## Build on Ubuntu
 
@@ -112,7 +112,8 @@ ros2 launch ar_admittance_control admittance_z.launch.py \
   port:=/dev/ttyUSB0
 ```
 
-Push sensor Z gently. The log should show `dz` with the intended sign, remain
+Push the configured sensor axis gently. The log should show the configured
+tool-axis displacement with the intended sign, remain
 inside 10 mm, then return smoothly toward zero after release. The robot is not
 connected in this mode. Useful outputs are:
 
@@ -124,11 +125,24 @@ ros2 topic echo /admittance/velocity_tool
 If the sign is wrong, edit `config/admittance_z.yaml` and change only
 `force_sign` between `1.0` and `-1.0`.
 
+For the detached sensor fixed flat on a table, start with:
+
+```yaml
+sensor_force_axis: "x"
+tool_motion_axis: "x"
+force_sign: 1.0
+```
+
+Push the sensor measuring side along its marked X direction. To use the other
+horizontal direction instead, change both axes to `"y"`. The two axes do not
+have to have the same name, but a cross-axis mapping should only be used when
+it is intentional and its direction has been checked in SHADOW mode.
+
 ## Stage 3: guarded ACTIVE mode
 
 Before this stage, verify all of the following:
 
-- sensor Z is aligned with tool Z and SHADOW direction is correct;
+- the configured sensor-force to tool-motion mapping was verified in SHADOW;
 - active tool, TCP, payload and robot installation settings are correct;
 - all joints are over 10 degrees from configured soft limits;
 - no `rokae_ros2`, RCI motion program or other xCoreSDK motion program runs;
@@ -156,10 +170,11 @@ ros2 run ar_admittance_control ar_admittance_z_node --ros-args \
   -p active_control:=true
 ```
 
-Read the terminal warning and type `ARM_ADMITTANCE_Z`. The program captures the
+Read the terminal warning and type `ARM_ADMITTANCE_AXIS`. The program captures the
 actual TCP and elbow; it does not move to a hard-coded pose, does not modify
 tool/load settings, and does not set a desired contact force. Gently press only
-along tool Z. Release should make the virtual spring return to the captured pose.
+along the selected tool axis. Release should make the virtual spring return to
+the captured pose.
 
 ## Initial tuning order
 
@@ -178,7 +193,7 @@ for identification and direction validation, not insertion production.
 
 ## Path toward plug insertion
 
-After tool-Z validation, implement and validate these stages separately:
+After single-axis validation, implement and validate these stages separately:
 
 1. Calibrate the fixed sensor-to-tool transform.
 2. Compensate tool/gripper/workpiece gravity and sensor bias versus orientation.
