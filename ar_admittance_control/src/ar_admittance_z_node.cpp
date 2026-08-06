@@ -350,7 +350,8 @@ class ArAdmittanceZNode final : public rclcpp::Node {
                     "F%s=%+.2f N, filtered=%+.2f N, d%s=%+.2f mm, v%s=%+.2f mm/s",
                     sensor_force_axis_.c_str(), wrench[sensor_force_index_],
                     axis.filtered_force_n, tool_motion_axis_.c_str(),
-                    axis.position_m * 1000.0, axis.velocity_m_s * 1000.0);
+                    axis.position_m * 1000.0, tool_motion_axis_.c_str(),
+                    axis.velocity_m_s * 1000.0);
         next_log = now_time + std::chrono::milliseconds(250);
       }
       next_tick += std::chrono::milliseconds(4);
