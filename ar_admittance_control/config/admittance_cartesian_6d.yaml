@@ -1,0 +1,48 @@
+ar_admittance_cartesian_6d_node:
+  ros__parameters:
+    # Keep both false for SHADOW. ACTIVE is refused unless both are true.
+    active_control: false
+    sensor_mounted_to_robot: false
+
+    robot_ip: "192.168.2.160"
+    local_ip: "192.168.2.100"
+    wrench_topic: "/m3815/wrench_raw"
+    duration_s: 15.0
+    wrench_timeout_s: 0.050
+
+    # Tare removes the stationary raw offset at the starting pose. Do not touch
+    # the robot or sensor during these two seconds.
+    tare_duration_s: 2.0
+    tare_force_range_n: 3.0
+    tare_torque_range_nm: 0.30
+    arm_quiet_force_n: 3.0
+    arm_quiet_torque_nm: 0.50
+
+    # [X,Y,Z,Rx,Ry,Rz]. Translation uses SI m; rotation uses rad.
+    # M*x_ddot + D*x_dot + K*x = external wrench.
+    virtual_mass: [30.0, 30.0, 30.0, 1.5, 1.5, 1.5]
+    damping: [250.0, 250.0, 250.0, 12.0, 12.0, 12.0]
+    stiffness: [1000.0, 1000.0, 1000.0, 30.0, 30.0, 30.0]
+    deadband: [1.5, 1.5, 1.5, 0.12, 0.12, 0.12]
+    filter_cutoff_hz: 10.0
+    enabled_axes: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    # Conservative commissioning limits: 10 mm and 3 deg per axis.
+    max_offset: [0.010, 0.010, 0.010, 0.0523599, 0.0523599, 0.0523599]
+    max_velocity: [0.010, 0.010, 0.010, 0.0872665, 0.0872665, 0.0872665]
+    max_acceleration: [0.20, 0.20, 0.20, 1.0, 1.0, 1.0]
+
+    # Pose of the SENSOR origin expressed in the active TOOL frame.
+    # RPY order is Rz(yaw)*Ry(pitch)*Rx(roll). Measure these values; do not guess.
+    tool_to_sensor_translation_m: [0.0, 0.0, 0.0]
+    tool_to_sensor_rpy_rad: [0.0, 0.0, 0.0]
+    # Use only for electrical polarity corrections after SHADOW verification.
+    wrench_sign: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    enabled_wrench_axes: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    hard_force_n: 20.0
+    hard_torque_nm: 3.0
+    raw_force_sanity_n: 1000.0
+    raw_torque_sanity_nm: 100.0
+    joint_watchdog_deg: 20.0
+    elbow_watchdog_deg: 12.0

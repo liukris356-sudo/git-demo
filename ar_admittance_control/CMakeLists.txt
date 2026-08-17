@@ -47,21 +47,35 @@ if(NOT EXISTS "${XMATE_MODEL_LIBRARY}")
   message(FATAL_ERROR "xMateModel library not found: ${XMATE_MODEL_LIBRARY}")
 endif()
 
-add_executable(ar_admittance_z_node src/ar_admittance_z_node.cpp)
-target_include_directories(ar_admittance_z_node PRIVATE
-  "${XCORE_SDK_ROOT}/include"
-  "${XCORE_SDK_ROOT}/external")
-target_compile_definitions(ar_admittance_z_node PRIVATE
-  EIGEN_DONT_ALIGN_STATICALLY)
-ament_target_dependencies(ar_admittance_z_node geometry_msgs rclcpp)
-target_link_libraries(ar_admittance_z_node
-  "${XCORE_STATIC_LIBRARY}"
-  "${XMATE_MODEL_LIBRARY}"
-  Threads::Threads
-  ${CMAKE_DL_LIBS})
-target_compile_options(ar_admittance_z_node PRIVATE -Wall -Wextra -Wpedantic)
+function(add_ar_admittance_node target source)
+  add_executable(${target} ${source})
+  target_include_directories(${target} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${XCORE_SDK_ROOT}/include"
+    "${XCORE_SDK_ROOT}/external")
+  target_compile_definitions(${target} PRIVATE EIGEN_DONT_ALIGN_STATICALLY)
+  ament_target_dependencies(${target} geometry_msgs rclcpp)
+  target_link_libraries(${target}
+    "${XCORE_STATIC_LIBRARY}"
+    "${XMATE_MODEL_LIBRARY}"
+    Threads::Threads
+    ${CMAKE_DL_LIBS})
+  target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+endfunction()
 
-install(TARGETS ar_admittance_z_node
+add_ar_admittance_node(ar_admittance_z_node
+  src/ar_admittance_z_node.cpp)
+add_ar_admittance_node(ar_admittance_cartesian_6d_node
+  src/ar_admittance_cartesian_6d_node.cpp)
+add_ar_admittance_node(ar_admittance_joint_6d_node
+  src/ar_admittance_joint_6d_node.cpp)
+target_compile_definitions(ar_admittance_joint_6d_node PRIVATE
+  XMATEMODEL_LIB_SUPPORTED)
+
+install(TARGETS
+  ar_admittance_z_node
+  ar_admittance_cartesian_6d_node
+  ar_admittance_joint_6d_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
