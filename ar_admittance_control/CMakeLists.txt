@@ -89,5 +89,7 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
+install(PROGRAMS scripts/assembly.sh
+  DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
