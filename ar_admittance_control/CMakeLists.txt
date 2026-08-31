@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(Threads REQUIRED)
 
 set(XCORE_SDK_ROOT "" CACHE PATH "Root of xCoreSDK-v0.7.1.ar_6")
@@ -47,14 +48,14 @@ if(NOT EXISTS "${XMATE_MODEL_LIBRARY}")
   message(FATAL_ERROR "xMateModel library not found: ${XMATE_MODEL_LIBRARY}")
 endif()
 
-function(add_ar_admittance_node target source)
-  add_executable(${target} ${source})
+function(add_ar_admittance_node target)
+  add_executable(${target} ${ARGN})
   target_include_directories(${target} PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${XCORE_SDK_ROOT}/include"
     "${XCORE_SDK_ROOT}/external")
   target_compile_definitions(${target} PRIVATE EIGEN_DONT_ALIGN_STATICALLY)
-  ament_target_dependencies(${target} geometry_msgs rclcpp)
+  ament_target_dependencies(${target} geometry_msgs rclcpp std_msgs)
   target_link_libraries(${target}
     "${XCORE_STATIC_LIBRARY}"
     "${XMATE_MODEL_LIBRARY}"
@@ -69,6 +70,14 @@ add_ar_admittance_node(ar_admittance_cartesian_6d_node
   src/ar_admittance_cartesian_6d_node.cpp)
 add_ar_admittance_node(ar_admittance_joint_6d_node
   src/ar_admittance_joint_6d_node.cpp)
+add_ar_admittance_node(ar_assembly_force_guard_node
+  src/ar_assembly_force_guard_node.cpp
+  src/ar_four_point_smooth_trajectory_guarded.cpp)
+target_include_directories(ar_assembly_force_guard_node PRIVATE
+  "${XCORE_SDK_ROOT}/example/ar_control_suite"
+  "${XCORE_SDK_ROOT}/example/rt")
+target_compile_definitions(ar_assembly_force_guard_node PRIVATE
+  AR_FORCE_GUARD_ROS2)
 target_compile_definitions(ar_admittance_joint_6d_node PRIVATE
   XMATEMODEL_LIB_SUPPORTED)
 
@@ -76,6 +85,7 @@ install(TARGETS
   ar_admittance_z_node
   ar_admittance_cartesian_6d_node
   ar_admittance_joint_6d_node
+  ar_assembly_force_guard_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
