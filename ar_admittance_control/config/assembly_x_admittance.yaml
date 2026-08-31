@@ -1,0 +1,37 @@
+ar_assembly_x_admittance_node:
+  ros__parameters:
+    active_control: false
+    sensor_mounted_to_robot: true
+    robot_ip: "192.168.2.160"
+    local_ip: "192.168.2.100"
+    tool: "g_tool_1"
+    workobject: "g_wobj_0"
+    wrench_topic: "/m3815/wrench_raw"
+
+    # Fixed experiment error: +0.1 mm in the selected workobject X axis.
+    x_error_m: 0.0001
+    speed_scale: 0.5
+
+    # Verify this sign in SHADOW. Standard admittance moves with external force.
+    force_to_motion_sign: 1.0
+    shadow_duration_s: 20.0
+    wrench_timeout_s: 0.05
+
+    # Only the workobject X correction is enabled in this node.
+    x_virtual_mass: 5.0
+    x_damping: 150.0
+    x_stiffness: 5000.0
+    x_deadband_n: 0.5
+    x_contact_n: 1.0
+    x_max_offset_m: 0.0003
+    x_max_velocity_m_s: 0.0005
+    x_max_acceleration_m_s2: 0.02
+
+    soft_force_n: 27.0
+    hard_force_n: 30.0
+    hard_torque_nm: 1.25
+
+    # Sensor frame relative to active tool frame. Rotation must be measured.
+    tool_to_sensor_translation_m: [0.0, 0.0, 0.0]
+    tool_to_sensor_rpy_rad: [0.0, 0.0, 0.0]
+    wrench_sign: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

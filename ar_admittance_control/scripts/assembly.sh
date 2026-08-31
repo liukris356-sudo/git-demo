@@ -43,9 +43,14 @@ usage() {
   force-files   查看最近保存的 CSV
 
 力保护装配（阶段2，不含导纳）：
+  guard-safe      5 N软停/8 N硬停，受保护地回到P_SAFE
   guard-test      5 N软停/8 N硬停的首次验证
   guard-assemble  27 N软停/30 N硬停，从当前位置回P_SAFE后完整装配
   guard-status    查看 /assembly/force_guard/status
+
+X误差+X导纳实验：
+  x-admit-shadow  只读检查工件X方向受力符号，不运动
+  x-admit-run     +0.1 mm工件X误差，并启用最大±0.3 mm的X导纳纠偏
 
 其他：
   check         显示当前程序、点文件、IP和话题状态
@@ -102,6 +107,7 @@ source_ros() {
 
 run_guarded_assembly() {
   local commissioning="$1"
+  local motion_mode="${2:-WIDE_AUTO}"
   source_ros
 
   if [[ ! -f "$POINTS_FILE" ]]; then
@@ -133,12 +139,28 @@ run_guarded_assembly() {
     "$TOOL" \
     "$WORKOBJECT" \
     "$POINTS_FILE" \
-    WIDE_AUTO \
+    "$motion_mode" \
     "$FORWARD_LINEAR_MM_S" \
     "$FORWARD_ROTATION_DEG_S" \
     --ros-args \
     --params-file "$params_file" \
     "${overrides[@]}"
+}
+
+run_x_admittance() {
+  local active="$1"
+  source_ros
+  local params_file
+  params_file="$(ros2 pkg prefix --share ar_admittance_control)/config/assembly_x_admittance.yaml"
+  if [[ ! -f "$params_file" || ! -f "$POINTS_FILE" ]]; then
+    echo "错误：找不到X导纳参数或点文件；请重新编译并检查POINTS_FILE" >&2
+    exit 2
+  fi
+  exec ros2 run ar_admittance_control ar_assembly_x_admittance_node \
+    --ros-args \
+    --params-file "$params_file" \
+    -p points_file:="$POINTS_FILE" \
+    -p active_control:="$active"
 }
 
 command_name="${1:-help}"
@@ -204,15 +226,24 @@ case "$command_name" in
     ls -lht "$HOME/force_sensor_logs"
     ;;
   guard-test)
-    run_guarded_assembly true
+    run_guarded_assembly true WIDE_AUTO
     ;;
   guard-assemble)
-    run_guarded_assembly false
+    run_guarded_assembly false WIDE_AUTO
+    ;;
+  guard-safe)
+    run_guarded_assembly true GO_SAFE
     ;;
   guard-status)
     source_ros
     exec ros2 topic echo /assembly/force_guard/status \
       --qos-durability transient_local
+    ;;
+  x-admit-shadow)
+    run_x_admittance false
+    ;;
+  x-admit-run)
+    run_x_admittance true
     ;;
   check)
     echo "程序：$PROGRAM"
