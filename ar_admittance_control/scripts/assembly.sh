@@ -48,9 +48,10 @@ usage() {
   guard-assemble  27 N软停/30 N硬停，从当前位置回P_SAFE后完整装配
   guard-status    查看 /assembly/force_guard/status
 
-X误差+X导纳实验：
-  x-admit-shadow  只读检查工件X方向受力符号，不运动
-  x-admit-run     +0.1 mm工件X误差，并启用最大±0.3 mm的X导纳纠偏
+阶段化X误差+X导纳实验：
+  x-admit-shadow      只读检查工件X和最终工件Z方向受力符号，不运动
+  x-admit-run         推荐：+0.1 mm X误差，扣除阶段正常力后再做X纠偏
+  x-admit-legacy-run  对照：旧算法，所有Fx直接进入导纳（不推荐实物）
 
 其他：
   check         显示当前程序、点文件、IP和话题状态
@@ -149,6 +150,7 @@ run_guarded_assembly() {
 
 run_x_admittance() {
   local active="$1"
+  local phase_aware="${2:-true}"
   source_ros
   local params_file
   params_file="$(ros2 pkg prefix --share ar_admittance_control)/config/assembly_x_admittance.yaml"
@@ -160,7 +162,8 @@ run_x_admittance() {
     --ros-args \
     --params-file "$params_file" \
     -p points_file:="$POINTS_FILE" \
-    -p active_control:="$active"
+    -p active_control:="$active" \
+    -p phase_aware_control:="$phase_aware"
 }
 
 command_name="${1:-help}"
@@ -240,10 +243,13 @@ case "$command_name" in
       --qos-durability transient_local
     ;;
   x-admit-shadow)
-    run_x_admittance false
+    run_x_admittance false true
     ;;
   x-admit-run)
-    run_x_admittance true
+    run_x_admittance true true
+    ;;
+  x-admit-legacy-run)
+    run_x_admittance true false
     ;;
   check)
     echo "程序：$PROGRAM"

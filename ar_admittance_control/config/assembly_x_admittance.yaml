@@ -12,6 +12,10 @@ ar_assembly_x_admittance_node:
     x_error_m: 0.0001
     speed_scale: 0.5
 
+    # PHASE_AWARE is now the recommended mode. LEGACY remains available only
+    # for reproducing the first +0.1 mm X experiment.
+    phase_aware_control: true
+
     # Verify this sign in SHADOW. Standard admittance moves with external force.
     force_to_motion_sign: 1.0
     shadow_duration_s: 20.0
@@ -27,9 +31,41 @@ ar_assembly_x_admittance_node:
     x_max_velocity_m_s: 0.0005
     x_max_acceleration_m_s2: 0.02
 
+    # Used only by LEGACY mode. PHASE_AWARE uses the profile and seating target.
     soft_force_n: 27.0
     hard_force_n: 30.0
     hard_torque_nm: 1.25
+
+    # Provisional normal-contact profile obtained from the three successful
+    # 2026-09-01 baseline runs. Progress is normalized over the complete
+    # P_SAFE -> P_BACK_LOW -> P_EDGE_IN -> P8 trajectory.
+    #
+    # normal_force_upper_n is the allowed resultant force envelope.
+    # normal_fx_center_n and half_width_n define the allowed workobject-X band.
+    # Only Fx outside that band is sent to the X admittance equation.
+    normal_profile_progress: [0.0, 0.06, 0.15, 0.25, 0.30, 0.34, 0.40, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 1.0]
+    normal_force_upper_n: [1.8, 2.1, 2.7, 2.5, 2.5, 1.7, 1.1, 1.1, 7.8, 6.9, 10.8, 16.5, 26.0, 35.0]
+    normal_fx_center_n: [-0.32, -0.52, 0.16, 1.36, 1.08, 0.50, 0.25, -0.33, -2.53, -4.79, -7.36, -9.24, -10.75, -14.07]
+    normal_fx_half_width_n: [0.60, 0.90, 0.90, 0.60, 0.60, 0.65, 0.55, 0.55, 0.90, 1.00, 1.20, 1.00, 1.10, 0.60]
+
+    # Reject short normal contact peaks. Stop if the force is outside the
+    # phase envelope but an X-only correction cannot reduce it.
+    excess_hold_s: 0.10
+    uncorrectable_hold_s: 0.50
+    uncorrectable_margin_n: 2.0
+    saturation_hold_s: 0.50
+    admittance_enable_progress: 0.34
+
+    # Final seating is force-terminated instead of blindly reaching P8.
+    # Axis 2 is workobject Z; sign +1 was inferred from the three baselines and
+    # must be confirmed in SHADOW before ACTIVE. 25 N target is selected so
+    # that the measured resultant remains below the unchanged 30 N hard stop.
+    seat_enable_progress: 0.85
+    seat_target_force_n: 25.0
+    seat_force_axis: 2
+    seat_force_sign: 1.0
+    seat_hold_s: 0.05
+    require_seat_force: true
 
     # Sensor frame relative to active tool frame. Rotation must be measured.
     tool_to_sensor_translation_m: [0.0, 0.0, 0.0]

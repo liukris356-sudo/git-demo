@@ -121,6 +121,29 @@ double smoothStep(double value) {
   return u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
 }
 
+double interpolateProfile(const std::vector<double> &progress,
+                          const std::vector<double> &values,
+                          double query) {
+  const double clamped = std::clamp(query, 0.0, 1.0);
+  const auto upper = std::upper_bound(progress.begin(), progress.end(), clamped);
+  if (upper == progress.begin()) return values.front();
+  if (upper == progress.end()) return values.back();
+  const std::size_t high = static_cast<std::size_t>(upper - progress.begin());
+  const std::size_t low = high - 1;
+  const double span = progress[high] - progress[low];
+  const double ratio = span > 0.0 ? (clamped - progress[low]) / span : 0.0;
+  return values[low] + ratio * (values[high] - values[low]);
+}
+
+const char *phaseName(double progress) {
+  if (progress < 0.06) return "APPROACH";
+  if (progress < 0.30) return "LIP_CONTACT";
+  if (progress < 0.34) return "RELEASE";
+  if (progress < 0.55) return "INSERT";
+  if (progress < 0.85) return "FLATTEN";
+  return "SEAT";
+}
+
 class NominalTrajectory {
  public:
   NominalTrajectory(const TaughtPoint &safe, const TaughtPoint &edge,
@@ -236,6 +259,7 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
     speed_scale_ = declare_parameter<double>("speed_scale", 0.5);
     force_to_motion_sign_ =
         declare_parameter<double>("force_to_motion_sign", 1.0);
+    phase_aware_ = declare_parameter<bool>("phase_aware_control", true);
     duration_shadow_s_ = declare_parameter<double>("shadow_duration_s", 20.0);
     wrench_timeout_s_ = declare_parameter<double>("wrench_timeout_s", 0.05);
 
@@ -253,6 +277,41 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
     hard_force_n_ = declare_parameter<double>("hard_force_n", 30.0);
     hard_torque_nm_ =
         declare_parameter<double>("hard_torque_nm", 1.25);
+
+    profile_progress_ = declare_parameter<std::vector<double>>(
+        "normal_profile_progress",
+        {0.0, 0.06, 0.15, 0.25, 0.30, 0.34, 0.40,
+         0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 1.0});
+    normal_force_upper_n_ = declare_parameter<std::vector<double>>(
+        "normal_force_upper_n",
+        {1.8, 2.1, 2.7, 2.5, 2.5, 1.7, 1.1,
+         1.1, 7.8, 6.9, 10.8, 16.5, 26.0, 35.0});
+    normal_fx_center_n_ = declare_parameter<std::vector<double>>(
+        "normal_fx_center_n",
+        {-0.32, -0.52, 0.16, 1.36, 1.08, 0.50, 0.25,
+         -0.33, -2.53, -4.79, -7.36, -9.24, -10.75, -14.07});
+    normal_fx_half_width_n_ = declare_parameter<std::vector<double>>(
+        "normal_fx_half_width_n",
+        {0.60, 0.90, 0.90, 0.60, 0.60, 0.65, 0.55,
+         0.55, 0.90, 1.00, 1.20, 1.00, 1.10, 0.60});
+    excess_hold_s_ = declare_parameter<double>("excess_hold_s", 0.10);
+    uncorrectable_hold_s_ =
+        declare_parameter<double>("uncorrectable_hold_s", 0.50);
+    uncorrectable_margin_n_ =
+        declare_parameter<double>("uncorrectable_margin_n", 2.0);
+    saturation_hold_s_ =
+        declare_parameter<double>("saturation_hold_s", 0.50);
+    admittance_enable_progress_ =
+        declare_parameter<double>("admittance_enable_progress", 0.34);
+    seat_enable_progress_ =
+        declare_parameter<double>("seat_enable_progress", 0.85);
+    seat_target_force_n_ =
+        declare_parameter<double>("seat_target_force_n", 25.0);
+    seat_force_axis_ = declare_parameter<int>("seat_force_axis", 2);
+    seat_force_sign_ = declare_parameter<double>("seat_force_sign", 1.0);
+    seat_hold_s_ = declare_parameter<double>("seat_hold_s", 0.05);
+    require_seat_force_ =
+        declare_parameter<bool>("require_seat_force", true);
 
     const auto sensor_xyz = declare_parameter<std::vector<double>>(
         "tool_to_sensor_translation_m", {0.0, 0.0, 0.0});
@@ -274,10 +333,11 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
         *this, wrench_topic_, wrench_timeout_s_);
     RCLCPP_WARN(
         get_logger(),
-        "Mode=%s; trajectory error=workobject X %+.3f mm; only X admittance "
-        "is enabled; hard limits %.1f N / %.2f Nm.",
+        "Mode=%s; trajectory error=workobject X %+.3f mm; X admittance=%s; "
+        "hard limits %.1f N / %.2f Nm.",
         active_ ? "ACTIVE" : "SHADOW", x_error_m_ * 1000.0,
-        hard_force_n_, hard_torque_nm_);
+        phase_aware_ ? "PHASE_AWARE" : "LEGACY", hard_force_n_,
+        hard_torque_nm_);
   }
 
   int run() {
@@ -303,6 +363,22 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
 
  private:
   void validate() const {
+    const auto profile_size = profile_progress_.size();
+    bool profile_valid = profile_size >= 2 &&
+                         normal_force_upper_n_.size() == profile_size &&
+                         normal_fx_center_n_.size() == profile_size &&
+                         normal_fx_half_width_n_.size() == profile_size &&
+                         std::abs(profile_progress_.front()) < 1e-9 &&
+                         std::abs(profile_progress_.back() - 1.0) < 1e-9;
+    for (std::size_t i = 0; profile_valid && i < profile_size; ++i) {
+      profile_valid = std::isfinite(profile_progress_[i]) &&
+                      std::isfinite(normal_force_upper_n_[i]) &&
+                      std::isfinite(normal_fx_center_n_[i]) &&
+                      std::isfinite(normal_fx_half_width_n_[i]) &&
+                      normal_force_upper_n_[i] > 0.0 &&
+                      normal_fx_half_width_n_[i] > 0.0 &&
+                      (i == 0 || profile_progress_[i] > profile_progress_[i - 1]);
+    }
     if (points_file_.empty() || std::abs(x_error_m_) > 0.0005 ||
         speed_scale_ <= 0.0 || speed_scale_ > 1.0 ||
         std::abs(std::abs(force_to_motion_sign_) - 1.0) > 1e-9 ||
@@ -312,7 +388,17 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
         max_velocity_m_s_ <= 0.0 || max_velocity_m_s_ > 0.001 ||
         max_acceleration_m_s2_ <= 0.0 || max_acceleration_m_s2_ > 0.05 ||
         soft_force_n_ <= 0.0 || hard_force_n_ <= soft_force_n_ ||
-        hard_torque_nm_ <= 0.0) {
+        hard_torque_nm_ <= 0.0 || !profile_valid || excess_hold_s_ < 0.0 ||
+        uncorrectable_hold_s_ <= 0.0 || uncorrectable_margin_n_ < 0.0 ||
+        saturation_hold_s_ <= 0.0 || admittance_enable_progress_ < 0.0 ||
+        admittance_enable_progress_ >= 1.0 || seat_enable_progress_ <= 0.0 ||
+        seat_enable_progress_ >= 1.0 ||
+        seat_enable_progress_ <= admittance_enable_progress_ ||
+        seat_target_force_n_ <= 0.0 ||
+        seat_target_force_n_ >= hard_force_n_ || seat_force_axis_ < 0 ||
+        seat_force_axis_ > 2 ||
+        std::abs(std::abs(seat_force_sign_) - 1.0) > 1e-9 ||
+        seat_hold_s_ <= 0.0) {
       throw std::invalid_argument("invalid or unsafe X-admittance parameters");
     }
   }
@@ -327,6 +413,16 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
       RCLCPP_INFO(get_logger(), "%s xyz=[%.3f %.3f %.3f] mm",
                   labels[i], pose[0] * 1000.0, pose[1] * 1000.0,
                   pose[2] * 1000.0);
+    }
+    if (phase_aware_) {
+      RCLCPP_WARN(
+          get_logger(),
+          "Phase-aware profile is a provisional fit from three successful "
+          "baseline runs. Normal lip contact is allowed; only excess "
+          "workobject Fx is sent to admittance. Seat target=%.1f N on "
+          "workobject axis %d with sign %+.0f; hard force=%.1f N.",
+          seat_target_force_n_, seat_force_axis_, seat_force_sign_,
+          hard_force_n_);
     }
   }
 
@@ -426,11 +522,13 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
   static const char *faultText(int code) {
     switch (code) {
       case 1: return "wrench stale/non-finite";
-      case 2: return "30 N / torque hard limit";
-      case 3: return "27 N soft force held for 30 ms";
+      case 2: return "force / torque hard limit";
+      case 3: return "legacy soft force held for 30 ms";
       case 4: return "robot state read failure";
       case 5: return "TCP tracking envelope";
-      case 6: return "X correction saturated while lateral force remained";
+      case 6: return "X correction saturated while excess Fx remained";
+      case 7: return "force exceeded phase envelope but X cannot correct it";
+      case 8: return "trajectory ended without reaching seating force";
       default: return "unknown";
     }
   }
@@ -449,14 +547,23 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
       requireAtSafe(robot, points.at("P_SAFE"));
       checkPath(robot, points.at("P_SAFE"), trajectory);
 
+      const std::string arm_token =
+          phase_aware_ ? "ARM_PHASE_X_ADMIT" : "ARM_X_ERROR_ADMIT";
       std::cout
-          << "ACTIVE X-ADMITTANCE: +0.1 mm workobject-X trajectory error.\n"
-          << "Only X correction is enabled; maximum correction is 0.3 mm.\n"
+          << (phase_aware_
+                  ? "ACTIVE PHASE-AWARE X-ADMITTANCE: normal contact is "
+                    "removed before X correction.\n"
+                  : "ACTIVE LEGACY X-ADMITTANCE: every measured Fx drives "
+                    "the correction.\n")
+          << "Trajectory error: workobject X " << std::showpos
+          << x_error_m_ * 1000.0 << std::noshowpos << " mm.\n"
+          << "Only X correction is enabled; maximum correction is "
+          << max_offset_m_ * 1000.0 << " mm.\n"
           << "Verify SHADOW sign, clear workspace, hold E-stop.\n"
-          << "Type ARM_X_ERROR_ADMIT exactly: " << std::flush;
+          << "Type " << arm_token << " exactly: " << std::flush;
       std::string confirmation;
       std::getline(std::cin, confirmation);
-      if (confirmation != "ARM_X_ERROR_ADMIT") {
+      if (confirmation != arm_token) {
         RCLCPP_WARN(get_logger(), "Cancelled; robot was not powered on");
         return 0;
       }
@@ -497,13 +604,29 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
       std::atomic<double> max_force{0.0};
       std::atomic<double> max_torque{0.0};
       std::atomic<double> last_fx_ref{0.0};
+      std::atomic<double> last_fx_excess{0.0};
+      std::atomic<double> last_progress{0.0};
+      std::atomic<double> last_seat_force{0.0};
+      std::atomic<bool> seat_reached{false};
       double correction = 0.0;
       double velocity = 0.0;
       double filtered_fx = 0.0;
       int soft_cycles = 0;
       int saturated_cycles = 0;
+      int excess_cycles = 0;
+      int uncorrectable_cycles = 0;
+      int seat_cycles = 0;
       bool contact = false;
       const auto started = Clock::now();
+
+      const int excess_hold_cycles =
+          std::max(1, static_cast<int>(std::ceil(excess_hold_s_ / 0.001)));
+      const int uncorrectable_hold_cycles = std::max(
+          1, static_cast<int>(std::ceil(uncorrectable_hold_s_ / 0.001)));
+      const int saturation_hold_cycles = std::max(
+          1, static_cast<int>(std::ceil(saturation_hold_s_ / 0.001)));
+      const int seat_hold_cycles =
+          std::max(1, static_cast<int>(std::ceil(seat_hold_s_ / 0.001)));
 
       std::function<rokae::CartesianPosition()> callback = [&]() {
         rokae::CartesianPosition command{};
@@ -529,11 +652,13 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
           command.setFinished();
           return command;
         }
-        soft_cycles = force_norm >= soft_force_n_ ? soft_cycles + 1 : 0;
-        if (soft_cycles >= 30) {
-          fault.store(3);
-          command.setFinished();
-          return command;
+        if (!phase_aware_) {
+          soft_cycles = force_norm >= soft_force_n_ ? soft_cycles + 1 : 0;
+          if (soft_cycles >= 30) {
+            fault.store(3);
+            command.setFinished();
+            return command;
+          }
         }
 
         std::array<double, 16> measured_array{};
@@ -553,19 +678,85 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
         const Eigen::Isometry3d measured =
             ar_admittance_control::rowMajorToEigen(measured_array);
         const Eigen::Isometry3d ref_measured = base_ref.inverse() * measured;
+        const double elapsed =
+            std::chrono::duration<double>(Clock::now() - started).count();
+        const double progress =
+            std::clamp(elapsed / trajectory.duration(), 0.0, 1.0);
+        last_progress.store(progress);
         const Vector6d tool_wrench = transform_.apply(corrected);
         const Eigen::Vector3d force_ref =
             ref_measured.linear() * tool_wrench.head<3>();
         const double fx = force_ref.x();
         last_fx_ref.store(fx);
-        contact = contact || std::abs(fx) >= contact_n_;
+        const double seat_force =
+            seat_force_sign_ * force_ref[seat_force_axis_];
+        last_seat_force.store(seat_force);
 
-        if (contact) {
-          const double alpha = 1.0 - std::exp(-2.0 * kPi * 10.0 * 0.001);
-          filtered_fx += alpha * (fx - filtered_fx);
-          const double input =
-              force_to_motion_sign_ *
-              ar_admittance_control::applyDeadband(filtered_fx, deadband_n_);
+        if (phase_aware_ && progress >= seat_enable_progress_ &&
+            seat_force >= seat_target_force_n_) {
+          ++seat_cycles;
+        } else {
+          seat_cycles = 0;
+        }
+        if (phase_aware_ && seat_cycles >= seat_hold_cycles) {
+          seat_reached.store(true);
+          command.setFinished();
+          return command;
+        }
+
+        double fx_excess = fx;
+        bool update_admittance = false;
+        if (phase_aware_) {
+          const double force_upper = interpolateProfile(
+              profile_progress_, normal_force_upper_n_, progress);
+          const double fx_center = interpolateProfile(
+              profile_progress_, normal_fx_center_n_, progress);
+          const double fx_half_width = interpolateProfile(
+              profile_progress_, normal_fx_half_width_n_, progress);
+          const double fx_low = fx_center - fx_half_width;
+          const double fx_high = fx_center + fx_half_width;
+          fx_excess = fx < fx_low ? fx - fx_low
+                                  : (fx > fx_high ? fx - fx_high : 0.0);
+          last_fx_excess.store(fx_excess);
+
+          const bool in_correction_window =
+              progress >= admittance_enable_progress_ && progress < 1.0;
+          if (in_correction_window && std::abs(fx_excess) > deadband_n_) {
+            ++excess_cycles;
+          } else {
+            excess_cycles = 0;
+          }
+          update_admittance = excess_cycles >= excess_hold_cycles;
+
+          const bool force_far_outside =
+              force_norm > force_upper + uncorrectable_margin_n_;
+          const bool x_cannot_help = std::abs(fx_excess) <= deadband_n_;
+          if (in_correction_window && force_far_outside && x_cannot_help) {
+            ++uncorrectable_cycles;
+          } else {
+            uncorrectable_cycles = 0;
+          }
+          if (uncorrectable_cycles >= uncorrectable_hold_cycles) {
+            fault.store(7);
+            command.setFinished();
+            return command;
+          }
+        } else {
+          contact = contact || std::abs(fx) >= contact_n_;
+          update_admittance = contact;
+          last_fx_excess.store(fx);
+        }
+
+        const double alpha = 1.0 - std::exp(-2.0 * kPi * 10.0 * 0.001);
+        filtered_fx += alpha * (fx_excess - filtered_fx);
+        const double input =
+            update_admittance
+                ? force_to_motion_sign_ *
+                      ar_admittance_control::applyDeadband(filtered_fx,
+                                                           deadband_n_)
+                : 0.0;
+        if (update_admittance || std::abs(correction) > 1e-9 ||
+            std::abs(velocity) > 1e-9) {
           double acceleration =
               (input - damping_ * velocity - stiffness_ * correction) /
               mass_;
@@ -576,20 +767,19 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
           correction = std::clamp(correction + velocity * 0.001,
                                   -max_offset_m_, max_offset_m_);
           if (std::abs(correction) >= 0.999 * max_offset_m_ &&
-              std::abs(fx) > 2.0) {
+              (phase_aware_ ? std::abs(fx_excess) > deadband_n_
+                            : std::abs(fx) > 2.0)) {
             ++saturated_cycles;
           } else {
             saturated_cycles = 0;
           }
-          if (saturated_cycles >= 500) {
+          if (saturated_cycles >= saturation_hold_cycles) {
             fault.store(6);
             command.setFinished();
             return command;
           }
         }
 
-        const double elapsed =
-            std::chrono::duration<double>(Clock::now() - started).count();
         PlanPoint nominal = trajectory.sample(elapsed);
         nominal.pose.translation().x() += correction;
         const Eigen::Isometry3d desired = base_ref * nominal.pose;
@@ -607,27 +797,38 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
         command.hasElbow = true;
         if (ar_admittance_control::stop_requested.load() ||
             elapsed >= trajectory.duration() + 0.5) {
+          if (phase_aware_ && require_seat_force_ &&
+              !seat_reached.load() &&
+              !ar_admittance_control::stop_requested.load()) {
+            fault.store(8);
+          }
           command.setFinished();
         }
         return command;
       };
 
-      RCLCPP_WARN(get_logger(),
-                  "ARMED: +%.3f mm X error, X correction max %.3f mm, "
-                  "duration %.1f s.",
-                  x_error_m_ * 1000.0, max_offset_m_ * 1000.0,
-                  trajectory.duration());
+      RCLCPP_WARN(
+          get_logger(),
+          "ARMED: %s, +%.3f mm X error, X correction max %.3f mm, "
+          "duration %.1f s.",
+          phase_aware_ ? "phase-aware normal-force rejection" : "legacy",
+          x_error_m_ * 1000.0, max_offset_m_ * 1000.0,
+          trajectory.duration());
       controller->setControlLoop(callback, 0, true);
       controller->startMove(rokae::RtControllerMode::cartesianPosition);
       controller->startLoop(true);
       if (fault.load() != 0) {
         RCLCPP_ERROR(get_logger(), "WATCHDOG STOP: %s", faultText(fault.load()));
       }
-      RCLCPP_INFO(get_logger(),
-                  "Result: correction X=%+.3f mm, Fx_ref=%+.2f N, "
-                  "max force=%.2f N, max torque=%.3f Nm",
-                  correction * 1000.0, last_fx_ref.load(), max_force.load(),
-                  max_torque.load());
+      RCLCPP_INFO(
+          get_logger(),
+          "Result: phase=%s (%.1f%%), correction X=%+.3f mm, "
+          "Fx_ref=%+.2f N, excess Fx=%+.2f N, seat force=%+.2f N, "
+          "seat=%s, max force=%.2f N, max torque=%.3f Nm",
+          phaseName(last_progress.load()), last_progress.load() * 100.0,
+          correction * 1000.0, last_fx_ref.load(), last_fx_excess.load(),
+          last_seat_force.load(), seat_reached.load() ? "REACHED" : "NO",
+          max_force.load(), max_torque.load());
       ar_admittance_control::safeShutdown(robot, controller);
       return fault.load() == 0 ? 0 : 6;
     } catch (const std::exception &error) {
@@ -648,6 +849,7 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
   double x_error_m_{0.0001};
   double speed_scale_{0.5};
   double force_to_motion_sign_{1.0};
+  bool phase_aware_{true};
   double duration_shadow_s_{20.0};
   double wrench_timeout_s_{0.05};
   double mass_{5.0};
@@ -661,6 +863,21 @@ class AssemblyXAdmittanceNode final : public rclcpp::Node {
   double soft_force_n_{27.0};
   double hard_force_n_{30.0};
   double hard_torque_nm_{1.25};
+  std::vector<double> profile_progress_;
+  std::vector<double> normal_force_upper_n_;
+  std::vector<double> normal_fx_center_n_;
+  std::vector<double> normal_fx_half_width_n_;
+  double excess_hold_s_{0.10};
+  double uncorrectable_hold_s_{0.50};
+  double uncorrectable_margin_n_{2.0};
+  double saturation_hold_s_{0.50};
+  double admittance_enable_progress_{0.34};
+  double seat_enable_progress_{0.85};
+  double seat_target_force_n_{25.0};
+  int seat_force_axis_{2};
+  double seat_force_sign_{1.0};
+  double seat_hold_s_{0.05};
+  bool require_seat_force_{true};
   ar_admittance_control::WrenchTransform transform_;
   std::unique_ptr<ar_admittance_control::WrenchReceiver> receiver_;
 };
