@@ -13,6 +13,7 @@ ROBOT_IP="${AR_ROBOT_IP:-192.168.2.160}"
 LOCAL_IP="${AR_LOCAL_IP:-192.168.2.100}"
 TOOL="${AR_TOOL:-g_tool_1}"
 WORKOBJECT="${AR_WORKOBJECT:-g_wobj_0}"
+FORCE_PORT="${AR_FORCE_PORT:-/dev/ttyUSB0}"
 
 FORWARD_LINEAR_MM_S="${AR_FORWARD_LINEAR_MM_S:-1.0}"
 FORWARD_ROTATION_DEG_S="${AR_FORWARD_ROTATION_DEG_S:-1.0}"
@@ -41,6 +42,7 @@ usage() {
   force         启动传感器驱动和曲线窗口
   plot          只启动曲线窗口；传感器驱动已运行时使用
   force-files   查看最近保存的 CSV
+  串口不是ttyUSB0时，先执行：export AR_FORCE_PORT=/dev/ttyUSB1
 
 力保护装配（阶段2，不含导纳）：
   guard-safe      5 N软停/8 N硬停，受保护地回到P_SAFE
@@ -52,6 +54,11 @@ usage() {
   x-admit-shadow      只读检查工件X和最终工件Z方向受力符号，不运动
   x-admit-run         推荐：+0.1 mm X误差，扣除阶段正常力后再做X纠偏
   x-admit-legacy-run  对照：旧算法，所有Fx直接进入导纳（不推荐实物）
+
+阶段感知六维笛卡尔导纳：
+  6d-admit-shadow     只读显示工件坐标系六维力，不上电、不运动
+  6d-admit-run        运行装配轨迹，并按阶段掩码做六维导纳修正
+  注意：首版默认开放X/Y/Rx/Ry，Z/Rz需有基线后再逐轴启用
 
 其他：
   check         显示当前程序、点文件、IP和话题状态
@@ -166,6 +173,23 @@ run_x_admittance() {
     -p phase_aware_control:="$phase_aware"
 }
 
+run_6d_admittance() {
+  local active="$1"
+  source_ros
+  local params_file
+  params_file="$(ros2 pkg prefix --share ar_admittance_control)/config/assembly_cartesian_6d_admittance.yaml"
+  if [[ ! -f "$params_file" || ! -f "$POINTS_FILE" ]]; then
+    echo "错误：找不到六维导纳参数或点文件；请重新编译并检查POINTS_FILE" >&2
+    exit 2
+  fi
+  exec ros2 run ar_admittance_control \
+    ar_assembly_cartesian_6d_admittance_node \
+    --ros-args \
+    --params-file "$params_file" \
+    -p points_file:="$POINTS_FILE" \
+    -p active_control:="$active"
+}
+
 command_name="${1:-help}"
 
 case "$command_name" in
@@ -210,13 +234,13 @@ case "$command_name" in
   force-driver)
     source_ros
     exec ros2 run force_sensor_yl force_sensor_yl_node --ros-args \
-      -p port:=/dev/ttyUSB0 \
+      -p port:="$FORCE_PORT" \
       -p topic_name:=/m3815/wrench_raw
     ;;
   force)
     source_ros
     exec ros2 launch force_sensor_yl monitor.launch.py \
-      port:=/dev/ttyUSB0 \
+      port:="$FORCE_PORT" \
       topic_name:=/m3815/wrench_raw
     ;;
   plot)
@@ -251,11 +275,18 @@ case "$command_name" in
   x-admit-legacy-run)
     run_x_admittance true false
     ;;
+  6d-admit-shadow)
+    run_6d_admittance false
+    ;;
+  6d-admit-run)
+    run_6d_admittance true
+    ;;
   check)
     echo "程序：$PROGRAM"
     echo "点文件：$POINTS_FILE"
     echo "机器人/本机：$ROBOT_IP / $LOCAL_IP"
     echo "工具/工件：$TOOL / $WORKOBJECT"
+    echo "六维力串口：$FORCE_PORT"
     [[ -x "$PROGRAM" ]] && echo "程序状态：存在" || echo "程序状态：缺失"
     [[ -f "$POINTS_FILE" ]] && echo "点文件状态：存在" || echo "点文件状态：缺失"
     if command -v ping >/dev/null 2>&1; then
@@ -263,10 +294,10 @@ case "$command_name" in
         && echo "机器人网络：可达" \
         || echo "机器人网络：不可达"
     fi
-    if [[ -e /dev/ttyUSB0 ]]; then
-      echo "六维力串口：/dev/ttyUSB0 存在"
+    if [[ -e "$FORCE_PORT" ]]; then
+      echo "六维力串口状态：$FORCE_PORT 存在"
     else
-      echo "六维力串口：/dev/ttyUSB0 不存在"
+      echo "六维力串口状态：$FORCE_PORT 不存在"
     fi
     ;;
   help|-h|--help)
