@@ -1,0 +1,72 @@
+ar_assembly_cartesian_6d_admittance_node:
+  ros__parameters:
+    # Keep false until all six wrench signs have been verified in SHADOW.
+    active_control: false
+    sensor_mounted_to_robot: true
+    robot_ip: "192.168.2.160"
+    local_ip: "192.168.2.100"
+    tool: "g_tool_1"
+    workobject: "g_wobj_0"
+    wrench_topic: "/m3815/wrench_raw"
+
+    # [X,Y,Z,Rx,Ry,Rz] in the selected workobject frame; m and rad.
+    # First experiment keeps the already-tested +0.2 mm X error.
+    trajectory_error: [0.0002, 0.0, 0.0, 0.0, 0.0, 0.0]
+    speed_scale: 0.5
+    shadow_duration_s: 30.0
+    wrench_timeout_s: 0.05
+    soft_limit_margin_deg: 3.0
+
+    # M*x_ddot + D*x_dot + K*x = excess wrench.
+    virtual_mass: [5.0, 5.0, 5.0, 0.05, 0.05, 0.05]
+    damping: [150.0, 150.0, 180.0, 1.0, 1.0, 1.0]
+    stiffness: [5000.0, 5000.0, 6000.0, 5.0, 5.0, 5.0]
+    deadband: [0.5, 0.5, 0.5, 0.03, 0.03, 0.03]
+    filter_cutoff_hz: 10.0
+
+    # Translation uses m, rotation uses rad.
+    max_offset: [0.0003, 0.0003, 0.0002, 0.00349066, 0.00349066, 0.00174533]
+    max_velocity: [0.0005, 0.0005, 0.0003, 0.00872665, 0.00872665, 0.00436332]
+    max_acceleration: [0.02, 0.02, 0.01, 0.20, 0.20, 0.10]
+
+    # Must be verified one axis at a time in SHADOW.
+    wrench_to_motion_sign: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+    # The solver is six-dimensional, but commissioning masks are deliberately
+    # selective. Change only one mask entry at a time after SHADOW testing.
+    # Axis order: [X,Y,Z,Rx,Ry,Rz].
+    phase_approach_axes: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    phase_lip_axes:      [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    phase_release_axes:  [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    phase_insert_axes:   [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    phase_flatten_axes:  [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+    phase_seat_axes:     [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+
+    # Existing X baseline profile from the three successful runs.
+    normal_profile_progress: [0.0, 0.06, 0.15, 0.25, 0.30, 0.34, 0.40, 0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 1.0]
+    normal_force_upper_n: [1.8, 2.1, 2.7, 2.5, 2.5, 1.7, 1.1, 1.1, 7.8, 6.9, 10.8, 16.5, 26.0, 35.0]
+    normal_fx_center_n: [-0.32, -0.52, 0.16, 1.36, 1.08, 0.50, 0.25, -0.33, -2.53, -4.79, -7.36, -9.24, -10.75, -14.07]
+    normal_fx_half_width_n: [0.60, 0.90, 0.90, 0.60, 0.60, 0.65, 0.55, 0.55, 0.90, 1.00, 1.20, 1.00, 1.10, 0.60]
+
+    # For Fy/Fz/Mx/My/Mz this first version uses fixed bands. Fz and Rz are
+    # deliberately not corrected until their successful-run profiles exist.
+    normal_wrench_center_other: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    normal_wrench_half_width_other: [0.5, 0.7, 30.0, 0.05, 0.05, 1.25]
+
+    excess_hold_s: 0.10
+    uncorrectable_hold_s: 0.50
+    uncorrectable_margin_n: 2.0
+    saturation_hold_s: 0.50
+    admittance_enable_progress: 0.34
+
+    seat_enable_progress: 0.85
+    seat_target_force_n: 25.0
+    seat_force_axis: 2
+    seat_force_sign: 1.0
+    seat_hold_s: 0.05
+    require_seat_force: true
+
+    # Sensor origin expressed in the active tool frame. Measure; do not guess.
+    tool_to_sensor_translation_m: [0.0, 0.0, 0.0]
+    tool_to_sensor_rpy_rad: [0.0, 0.0, 0.0]
+    wrench_sign: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]

@@ -1,0 +1,18 @@
+ar_assembly_force_guard_node:
+  ros__parameters:
+    wrench_topic: "/m3815/wrench_raw"
+    status_topic: "/assembly/force_guard/status"
+
+    # Stage 2 is guard-only: it never changes the assembly path.
+    soft_force_n: 27.0
+    hard_force_n: 30.0
+    hard_torque_nm: 1.25
+    soft_hold_s: 0.030
+    wrench_timeout_s: 0.050
+    filter_cutoff_hz: 10.0
+
+    # The driver already performs software tare. This additional check only
+    # verifies that the hands-off signal is fresh and stable before power-on.
+    quiet_check_s: 2.0
+    quiet_force_range_n: 3.0
+    quiet_torque_range_nm: 0.30
