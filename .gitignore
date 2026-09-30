@@ -25,3 +25,9 @@ env/
 *.swp
 *~
 .DS_Store
+# 日志与临时安装清单
+logs/
+_rokae_log_/
+*.bak
+symlink_install_manifest.txt
+.~*

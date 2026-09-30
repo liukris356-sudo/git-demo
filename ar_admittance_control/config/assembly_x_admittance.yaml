@@ -9,7 +9,7 @@ ar_assembly_x_admittance_node:
     wrench_topic: "/m3815/wrench_raw"
 
     # Fixed experiment error: +0.1 mm in the selected workobject X axis.
-    x_error_m: 0.0001
+    x_error_m: 0.0002
     speed_scale: 0.5
 
     # PHASE_AWARE is now the recommended mode. LEGACY remains available only
@@ -30,6 +30,18 @@ ar_assembly_x_admittance_node:
     x_max_offset_m: 0.0003
     x_max_velocity_m_s: 0.0005
     x_max_acceleration_m_s2: 0.02
+    # Z correction is enabled in this node 
+    z_vitual_mass: 5.0
+    z_damping: 180.0
+    z_stiffness: 6000.0
+    z_deadband_n: 0.5
+    z_max_offset_m: 0.0002
+    z_max_velocity_m_s: 0.0005
+    z_max_acceleration_m_s2: 0.02
+    # 【关键安全配置】Z 导纳允许生效的进度区间
+    # 越边阶段(0.30~0.34)严禁启用 Z 浮动，落座施压阶段(>=0.85)转入纯力控判定，禁用 Z 导纳
+     z_admittance_enable_progress: 0.35
+     z_admittance_disable_progress: 0.85
 
     # Used only by LEGACY mode. PHASE_AWARE uses the profile and seating target.
     soft_force_n: 27.0

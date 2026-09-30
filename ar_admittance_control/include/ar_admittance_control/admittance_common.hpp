@@ -193,7 +193,8 @@ class WrenchReceiver {
   }
 
   bool tare(double duration_s, double max_force_range_n,
-            double max_torque_range_nm, std::string &reason) {
+            double max_torque_range_nm, std::string &reason,
+            std::uint64_t min_samples = 20) {
     Vector6d minimum = Vector6d::Constant(
         std::numeric_limits<double>::infinity());
     Vector6d maximum = Vector6d::Constant(
@@ -222,8 +223,10 @@ class WrenchReceiver {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (count < 50) {
-      reason = "too few wrench samples for tare";
+    if (count < min_samples) {
+      reason = "too few wrench samples for tare (got " +
+               std::to_string(count) + ", required " +
+               std::to_string(min_samples) + ")";
       return false;
     }
     const Vector6d range = maximum - minimum;
@@ -428,6 +431,67 @@ inline void switchToRealtime(rokae::ArRobot &robot) {
 inline void safeShutdown(
     rokae::ArRobot &robot,
     const std::shared_ptr<rokae::RtMotionControlCobot<7>> &controller) noexcept {
+  if (controller) {
+    try {
+      controller->stopMove();
+    } catch (...) {
+    }
+    controller->disconnectNetwork();
+  }
+  std::error_code ec;
+  robot.stopReceiveRobotState();
+  robot.setPowerState(false, ec);
+  ec.clear();
+  robot.setMotionControlMode(rokae::MotionControlMode::Idle, ec);
+  ec.clear();
+  robot.setOperateMode(rokae::OperateMode::manual, ec);
+}
+
+inline void checkSoftLimits(rokae::StandardRobot &robot,
+                            std::array<double[2], 6> &limits,
+                            double margin_rad) {
+  std::error_code ec;
+  const auto joints = robot.jointPos(ec);
+  requireOk(ec, "read joints before real-time mode");
+  const bool enabled = robot.getSoftLimit(limits, ec);
+  requireOk(ec, "read joint soft limits");
+  if (!enabled) {
+    throw std::runtime_error("joint soft limits are disabled");
+  }
+  for (std::size_t i = 0; i < joints.size(); ++i) {
+    if (joints[i] - limits[i][0] < margin_rad ||
+        limits[i][1] - joints[i] < margin_rad) {
+      throw std::runtime_error("J" + std::to_string(i + 1) +
+                               " is too close to a soft limit");
+    }
+  }
+}
+
+inline void powerInNonRealtime(rokae::StandardRobot &robot) {
+  std::error_code ec;
+  robot.setMotionControlMode(rokae::MotionControlMode::NrtCommand, ec);
+  requireOk(ec, "select non-real-time mode");
+  robot.setOperateMode(rokae::OperateMode::automatic, ec);
+  requireOk(ec, "select automatic mode");
+  robot.setPowerState(true, ec);
+  requireOk(ec, "power on");
+}
+
+inline void switchToRealtime(rokae::StandardRobot &robot) {
+  std::error_code ec;
+  robot.setRtNetworkTolerance(50, ec);
+  requireOk(ec, "set real-time network tolerance");
+  robot.setMotionControlMode(rokae::MotionControlMode::RtCommand, ec);
+  requireOk(ec, "select real-time mode");
+  robot.setOperateMode(rokae::OperateMode::automatic, ec);
+  requireOk(ec, "select automatic mode after real-time mode");
+  robot.setPowerState(true, ec);
+  requireOk(ec, "power on after real-time mode");
+}
+
+inline void safeShutdown(
+    rokae::StandardRobot &robot,
+    const std::shared_ptr<rokae::RtMotionControlIndustrial<6>> &controller) noexcept {
   if (controller) {
     try {
       controller->stopMove();

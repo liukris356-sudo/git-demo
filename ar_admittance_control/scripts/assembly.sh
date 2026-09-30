@@ -58,7 +58,16 @@ usage() {
 阶段感知六维笛卡尔导纳：
   6d-admit-shadow     只读显示工件坐标系六维力，不上电、不运动
   6d-admit-run        运行装配轨迹，并按阶段掩码做六维导纳修正
-  注意：首版默认开放X/Y/Rx/Ry，Z/Rz需有基线后再逐轴启用
+  6d-test-x-pos15     X 轴 +1.5 mm 单轴扰动装配
+  6d-test-x-neg15     X 轴 -1.5 mm 单轴扰动装配
+  6d-test-rx-pos1     Rx +1.0 deg 单轴扰动装配
+  6d-test-rx-neg1     Rx -1.0 deg 单轴扰动装配
+  6d-test-ry-pos1     Ry +1.0 deg 单轴扰动装配
+  6d-test-ry-neg1     Ry -1.0 deg 单轴扰动装配
+  6d-admit-six-error  使用同一控制器运行保守六轴复合偏差装配测试
+                      [X,Y,Z,Rx,Ry,Rz]=[+0.50,-0.20,+0.05 mm,
+                                        +0.20,-0.30,+0.08 deg]
+  注意：当前六轴掩码均开启；任一轴方向未完成SHADOW验证时不要运行复合测试
 
 其他：
   check         显示当前程序、点文件、IP和话题状态
@@ -175,6 +184,7 @@ run_x_admittance() {
 
 run_6d_admittance() {
   local active="$1"
+  local trajectory_error_override="${2:-}"
   source_ros
   local params_file
   params_file="$(ros2 pkg prefix --share ar_admittance_control)/config/assembly_cartesian_6d_admittance.yaml"
@@ -182,12 +192,18 @@ run_6d_admittance() {
     echo "错误：找不到六维导纳参数或点文件；请重新编译并检查POINTS_FILE" >&2
     exit 2
   fi
+  local overrides=()
+  if [[ -n "$trajectory_error_override" ]]; then
+    overrides=(-p "trajectory_error:=$trajectory_error_override")
+  fi
+
   exec ros2 run ar_admittance_control \
     ar_assembly_cartesian_6d_admittance_node \
     --ros-args \
     --params-file "$params_file" \
     -p points_file:="$POINTS_FILE" \
-    -p active_control:="$active"
+    -p active_control:="$active" \
+    "${overrides[@]}"
 }
 
 command_name="${1:-help}"
@@ -280,6 +296,38 @@ case "$command_name" in
     ;;
   6d-admit-run)
     run_6d_admittance true
+    ;;
+  6d-test-x-pos15)
+    run_6d_admittance true \
+      "[0.0015,0.0,0.0,0.0,0.0,0.0]"
+    ;;
+  6d-test-x-neg15)
+    run_6d_admittance true \
+      "[-0.0015,0.0,0.0,0.0,0.0,0.0]"
+    ;;
+  6d-test-rx-pos1)
+    run_6d_admittance true \
+      "[0.0,0.0,0.0,0.01745329,0.0,0.0]"
+    ;;
+  6d-test-rx-neg1)
+    run_6d_admittance true \
+      "[0.0,0.0,0.0,-0.01745329,0.0,0.0]"
+    ;;
+  6d-test-ry-pos1)
+    run_6d_admittance true \
+      "[0.0,0.0,0.0,0.0,0.01745329,0.0]"
+    ;;
+  6d-test-ry-neg1)
+    run_6d_admittance true \
+      "[0.0,0.0,0.0,0.0,-0.01745329,0.0]"
+    ;;
+  6d-admit-six-error)
+    # Conservative representative pickup misalignment. This changes only the
+    # injected trajectory error; the 6D solver, governor, limits and watchdogs
+    # remain identical to 6d-admit-run.
+    # [X,Y,Z] in metres; [Rx,Ry,Rz] in radians.
+    run_6d_admittance true \
+      "[0.0005,-0.0002,0.00005,0.00349066,-0.00523599,0.00139626]"
     ;;
   check)
     echo "程序：$PROGRAM"

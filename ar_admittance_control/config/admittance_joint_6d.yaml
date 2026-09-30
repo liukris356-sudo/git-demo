@@ -30,7 +30,7 @@ ar_admittance_joint_6d_node:
 
     # Pose of SENSOR origin expressed in FLANGE frame. This must match the
     # mechanical adapter. The lever arm is used in tau_f = R*tau_s + p x F_f.
-    flange_to_sensor_translation_m: [0.0, 0.0, 0.0]
+    flange_to_sensor_translation_m: [0.0, 0.0, 0.072]
     flange_to_sensor_rpy_rad: [0.0, 0.0, 0.0]
     wrench_sign: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     # First ACTIVE test should enable only one sensor component at a time.

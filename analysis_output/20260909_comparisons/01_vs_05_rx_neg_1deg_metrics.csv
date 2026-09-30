@@ -1,0 +1,3 @@
+﻿label,source_csv,sample_rate_hz,contact_time_s,peak_force_n,p95_force_n,peak_torque_nm,active_duration_s
+01正常装配,/home/liu/projects/git-demo-admittance/attachments/519dc6d6-67e4-43cf-8944-fd655e6d7b08/b3fae4b7-6afc-4038-bc44-94383176fa59-m3815_20260901_170932_01.csv,500.020,86.290596,33.890670,33.719890,1.229047,30.943923
+Rx -1°,/home/liu/projects/git-demo-admittance/attachments/a1396fdf-a2ae-4079-a3ed-b44868b86096/fbb1d9b5-bc93-4e14-ba23-9668219d71da-m3815_20260909_102351rx-1.csv,500.012,180.005728,28.182222,26.007903,1.063337,86.241315

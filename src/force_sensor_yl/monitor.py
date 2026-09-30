@@ -267,8 +267,10 @@ def _spin_executor(executor):
 def main(args=None):
     try:
         import matplotlib.pyplot as plt
+        from matplotlib import font_manager
         from matplotlib.animation import FuncAnimation
         from matplotlib.widgets import Button
+        import tkinter as tk
         from tkinter import filedialog
     except ImportError as exc:
         raise SystemExit(
@@ -291,13 +293,50 @@ def main(args=None):
 
     figure = None
     try:
-        plt.rcParams["font.sans-serif"] = [
+        # Matplotlib often exposes Ubuntu's NotoSansCJK-Regular.ttc as the
+        # first collection face (usually "Noto Sans CJK JP"), even though
+        # fontconfig reports "Noto Sans CJK SC". Load the actual file and use
+        # the family name Matplotlib sees instead of relying on fontconfig.
+        font_paths = (
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-VF.ttf"),
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+        )
+        chinese_font_name = None
+        for font_path in font_paths:
+            if not font_path.is_file():
+                continue
+            try:
+                font_manager.fontManager.addfont(str(font_path))
+                chinese_font_name = font_manager.FontProperties(
+                    fname=str(font_path)
+                ).get_name()
+                node.get_logger().info(
+                    f"曲线中文字体: {chinese_font_name} ({font_path})"
+                )
+                break
+            except Exception as exc:
+                node.get_logger().warning(
+                    f"加载中文字体失败 {font_path}: {exc}"
+                )
+
+        font_families = [
+            "Noto Sans CJK JP",
             "Noto Sans CJK SC",
             "WenQuanYi Zen Hei",
             "SimHei",
             "Microsoft YaHei",
             "DejaVu Sans",
         ]
+        if chinese_font_name is not None:
+            font_families.insert(0, chinese_font_name)
+            plt.rcParams["font.family"] = [chinese_font_name]
+        else:
+            node.get_logger().warning(
+                "没有找到可直接加载的中文字体；请安装 fonts-noto-cjk"
+            )
+            plt.rcParams["font.family"] = ["sans-serif"]
+        plt.rcParams["font.sans-serif"] = font_families
         plt.rcParams["axes.unicode_minus"] = False
 
         figure, (force_axis, torque_axis, dominant_axis) = plt.subplots(
@@ -420,23 +459,35 @@ def main(args=None):
 
             node.output_dir.mkdir(parents=True, exist_ok=True)
             filename = datetime.now().strftime("m3815_%Y%m%d_%H%M%S.csv")
-            parent = getattr(figure.canvas.manager, "window", None)
-            path = filedialog.asksaveasfilename(
-                parent=parent,
-                title="保存 M3815 六维力数据",
-                initialdir=str(node.output_dir),
-                initialfile=filename,
-                defaultextension=".csv",
-                filetypes=(("CSV 文本", "*.csv"), ("所有文件", "*.*")),
-            )
-            if not path:
+            # Matplotlib currently uses a Qt MainWindow on this system. It
+            # cannot be used as tkinter's parent because it has no `.tk`
+            # attribute. Create an independent hidden Tk root for the native
+            # save dialog, then destroy only that temporary root.
+            dialog_root = tk.Tk()
+            dialog_root.withdraw()
+            try:
+                path_text = filedialog.asksaveasfilename(
+                    parent=dialog_root,
+                    title="保存 M3815 六维力数据",
+                    initialdir=str(node.output_dir),
+                    initialfile=filename,
+                    defaultextension=".csv",
+                    filetypes=(("CSV 文本", "*.csv"),
+                               ("所有文件", "*.*")),
+                )
+            finally:
+                dialog_root.destroy()
+
+            if not path_text:
                 update_record_status("已取消保存，数据仍保留在内存中")
                 return
 
+            path = Path(path_text)
+
             try:
-                saved_count = node.save_csv(Path(path))
+                saved_count = node.save_csv(path)
                 update_record_status(
-                    f"已保存 {saved_count} 条样本到 {Path(path).name}"
+                    f"已保存 {saved_count} 条样本到 {path.name}"
                 )
                 print(f"\nCSV 已保存: {path}", flush=True)
             except Exception as exc:
@@ -577,3 +628,4 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
+

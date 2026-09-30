@@ -77,6 +77,8 @@ add_ar_admittance_node(ar_assembly_x_admittance_node
   src/ar_assembly_x_admittance_node.cpp)
 add_ar_admittance_node(ar_assembly_cartesian_6d_admittance_node
   src/ar_assembly_cartesian_6d_admittance_node.cpp)
+add_ar_admittance_node(xb7_assembly_cartesian_6d_admittance_node
+  src/xb7_assembly_cartesian_6d_admittance_node.cpp)
 target_include_directories(ar_assembly_force_guard_node PRIVATE
   "${XCORE_SDK_ROOT}/example/ar_control_suite"
   "${XCORE_SDK_ROOT}/example/rt")
@@ -92,6 +94,7 @@ install(TARGETS
   ar_assembly_force_guard_node
   ar_assembly_x_admittance_node
   ar_assembly_cartesian_6d_admittance_node
+  xb7_assembly_cartesian_6d_admittance_node
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME})
